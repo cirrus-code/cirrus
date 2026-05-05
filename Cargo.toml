@@ -1,0 +1,34 @@
+[package]
+name = "rust-template"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "main"
+path = "main.rs"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+
+[lints.clippy]
+disallowed_types = "deny"
+disallowed_methods = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+[package.metadata.release]
+allow-branch = ["main"]
+sign-commit = true
+sign-tag = true
+push-remote = "origin"
+tag-prefix = "v"
+tag-name = "{{prefix}}{{version}}"
+publish = true

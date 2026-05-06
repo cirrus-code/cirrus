@@ -1,13 +1,5 @@
-# nix-rust-template
+# cloudburst
 
-My personal project template for Rust projects using Nix.
+A Rust-based HTTP client for the Salesforce API.
 
-## Setup
-
-``` nu
-mkdir .direnv
-"use flake" | save -f .envrc
-nix flake lock
-cargo generate-lockfile
-```
-
+This project is in no way affiliated with Salesforce.

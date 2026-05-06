@@ -1,18 +1,41 @@
 [package]
-name = "rust-template"
+name = "cloudburst-sdk"
 version = "0.1.0"
 edition = "2024"
-
-[[bin]]
-name = "main"
-path = "main.rs"
+description = "An ergonomic Rust HTTP client for the Salesforce REST API."
+license = "MIT OR Apache-2.0"
+authors = ["Ryan Faulhaber <ryf@sent.as>"]
+keywords = ["salesforce", "api", "client", "sdk", "rest"]
+categories = ["api-bindings", "web-programming::http-client"]
+readme = "README.md"
 
 [lib]
 path = "lib.rs"
 
 [dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+camino = "1.2"
+fs-err = "3.3"
+getrandom = "0.4"
+jsonwebtoken = { version = "10.3", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+reqwest = { version = "0.13", default-features = false, features = ["form", "json", "query", "rustls", "charset", "system-proxy"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_urlencoded = "0.7"
+sha2 = "0.11"
+thiserror = "2.0"
+tokio = { version = "1.52", features = ["sync"] }
+url = "2.5"
+
+[dev-dependencies]
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
 
 [lints.clippy]
+await_holding_invalid_type = "deny"
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
 disallowed_types = "deny"
 disallowed_methods = "deny"
 unwrap_used = "deny"

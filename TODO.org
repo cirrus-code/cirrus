@@ -1,0 +1,232 @@
+#+TITLE: cloudburst-sdk roadmap
+#+AUTHOR: Ryan Faulhaber
+#+STARTUP: overview
+#+TODO: TODO IN-PROGRESS BLOCKED | DONE SKIP
+
+* Status snapshot
+- Auth flows: 5/5 priority flows shipped (JWT, Refresh, Client Credentials, Web Server PKCE, Token Exchange).
+- API surface: 6/10 Phase 1 builders shipped (=versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=).
+- Open-ended client escape hatch shipped: =get= / =get_with_query= / =post= / =put= / =patch= / =delete= / =request_builder= / =execute= on =Cloudburst= with three-mode path resolution. Cross-cutting infrastructure unblocked.
+- Test count baseline: 122 unit + 2 doctest, all passing; clippy clean.
+
+* Design principle: open-ended client (octocrab-style escape hatch)
+:PROPERTIES:
+:CATEGORY: design
+:END:
+
+The Salesforce REST surface is large and growing. We will *not* race
+Salesforce to wrap every endpoint. Instead, the client must always
+expose a low-level escape hatch so a user can call any
+=/services/data/...= URL we haven't typed yet — without giving up auth,
+the configured instance URL, retry policy, or =tracing= spans.
+
+This is the same contract [[https://github.com/XAMPPRocky/octocrab][Octocrab]] offers for GitHub: typed
+builders for the common surface, plus =get= / =post= / =put= / =patch=
+/ =delete= methods that take a path + serializable body and return
+either typed JSON or =serde_json::Value=.
+
+** Required surface
+- =Client::get<R: DeserializeOwned>(path, query) -> Result<R>=
+- =Client::post<B: Serialize, R: DeserializeOwned>(path, body) -> Result<R>=
+- =Client::put / patch / delete= — symmetrical
+- =Client::execute(reqwest::Request) -> Result<reqwest::Response>= —
+  full bypass for unusual cases (multipart upload, custom headers,
+  binary download, SSE).
+- =Client::request_builder(method, path) -> reqwest::RequestBuilder=
+  — pre-authenticated, pre-baseurl'd, but not yet sent. Lets the
+  caller compose anything reqwest can express.
+
+** Path semantics
+- Relative path (=sobjects/Account/001...=) → resolved against
+  =instance_url + /services/data/{version}/=.
+- Path with leading =/= (=/services/apexrest/foo=) → resolved against
+  =instance_url= directly. Mirrors how Salesforce's own
+  =nextRecordsUrl= comes back as an absolute path under the instance.
+- Fully-qualified =https://...= URL → used as-is. Useful for
+  =nextPageUrl= / Bulk 2.0 job result locators.
+
+** What still flows through automatically
+- =Authorization: Bearer ...= header from the configured =AuthFlow=
+  (refresh-on-401 still applies).
+- Configured =api_version= for relative paths.
+- Retry / backoff (once that lands).
+- =tracing= span around the request (once that lands).
+
+** Why this matters now (not later)
+- Unblocks every "we don't have a builder for X yet" complaint with a
+  one-liner answer.
+- Forces us to design the =Client= around composable layers
+  (auth → base URL → request) instead of letting typed builders
+  accidentally short-circuit those layers.
+- Lets us *delete* speculative typed builders if usage data shows the
+  raw escape hatch is fine; we can't easily un-ship a typed wrapper.
+
+** Non-goals
+- We do *not* try to make the escape hatch ergonomic enough to replace
+  builders for high-traffic resources. CRUD, query, search etc. should
+  feel nicer than the raw call.
+- We do *not* expose internal modules (=token_endpoint=, etc.) just
+  because the escape hatch exists. The escape hatch is for *Salesforce
+  REST*, not for our auth internals.
+
+* Authentication [5/5]
+:PROPERTIES:
+:CATEGORY: auth
+:END:
+** DONE Static token (=auth::static_token=)
+** DONE JWT Bearer (=auth::jwt=) — RS256, 3-min skew on =exp=
+** DONE Refresh Token (=auth::refresh=)
+** DONE Client Credentials (=auth::client_credentials=) — =login_url= required (no default)
+** DONE Web Server with PKCE (=auth::web_server=) — RFC 7636, 96-byte verifier
+** DONE Token Exchange RFC 8693 (=auth::token_exchange=) — incl. hybrid grant
+** Deferred / not committed
+- [ ] Headless Identity Flows (passwordless / one-time-password)
+- [ ] OAuth 2.0 for Hybrid Apps
+- [ ] Generic =requestToken()= escape hatch (jsforce-style) — *auth-only*; distinct from the [[*Design principle: open-ended client (octocrab-style escape hatch)][REST escape hatch]] above. Only useful if a caller needs a grant type we haven't wrapped.
+- [ ] Device Flow — likely =SKIP= unless a CLI consumer materializes
+- [ ] Asset Token Flow — likely =SKIP=, IoT-only
+
+* Phase 1 — MVP REST API surface [6/10]
+:PROPERTIES:
+:GOAL: Exercise the auth layer end-to-end and lock in the request/response/handler shape that all later tiers reuse.
+:END:
+** DONE =/services/data= — list versions (=handlers::versions=)
+** DONE =/services/data/vXX.X/limits= (=handlers::limits=)
+- Typed =Limit= envelope handles the =PermissionSets.CreateCustom= nested case via =#[serde(flatten)]=.
+** DONE =/services/data/vXX.X/sobjects/= — describe global (=handlers::sobjects::SObjectsHandler=)
+- Typed =DescribeGlobal= + =SObjectMetadata=. =urls= map kept generic to absorb new keys across API versions.
+** DONE =/services/data/vXX.X/sobjects/{SObject}/describe= (=SObjectHandler::describe=)
+- Returns =serde_json::Value= by default; =describe_as::<T>()= for typed callers.
+** DONE SObject CRUD [5/5]
+- [X] =GET    /sobjects/{SObject}/{id}= — =retrieve= / =retrieve_with_fields=, plus =_as::<T>= variants
+- [X] =POST   /sobjects/{SObject}= — =create=
+- [X] =PATCH  /sobjects/{SObject}/{id}= — =update=
+- [X] =DELETE /sobjects/{SObject}/{id}= — =delete=
+- [X] =PATCH  /sobjects/{SObject}/{ExternalIdField}/{value}= — =upsert= (external value is percent-encoded via =Url::path_segments_mut=)
+** DONE =/services/data/vXX.X/query= + =/queryAll= (=handlers::query=)
+- =query=, =query_all=, =query_more= on =Cloudburst=, each with =_as::<T>()= typed variants returning =QueryResult<R>=.
+- =query_more= goes through =get_unversioned= because the =nextRecordsUrl= locator is instance-relative and carries the *originating* API version (locator wins over client config — Salesforce-mandated).
+- Pagination iterator/stream wrapper still pending — tracked under cross-cutting infrastructure.
+** DONE =/services/data/vXX.X/search= and =/parameterizedSearch= (=handlers::search=)
+- =search(sosl)= for SOSL strings; =parameterized_search(body)= for the structured POST form.
+- =SearchResult<R>= envelope alongside =QueryResult<R>=; =metadata= surfaced as raw =serde_json::Value= because its shape changes across versions.
+- *Deliberately omitted:* the =GET /parameterizedSearch?q=…&sobject=…= form. The POST form is strictly more capable; if a caller really needs the GET form they can hit it via the open-ended client escape hatch (once it lands).
+** TODO =/services/data/vXX.X/composite/batch= [#A]
+- Up to 25 sub-requests in one round trip; the fan-out primitive for the rest of Phase 1.
+
+* Phase 2 — Power-user surface [0/?]
+:PROPERTIES:
+:GOAL: Cover the requests jsforce/simple-salesforce users reach for after CRUD.
+:END:
+** TODO Composite tree =/composite/tree/{SObject}= — nested inserts in one call
+** TODO Composite collections =/composite/sobjects= — bulk CRUD up to 200 records
+** TODO Generic composite =/composite= — chained requests with ref binding
+** TODO Bulk API 2.0 (=/jobs/ingest=, =/jobs/query=) — async CSV ingest/query
+** TODO SObject collections — record-set CRUD wrappers
+** TODO Apex REST passthrough — =/services/apexrest/{path}=
+** TODO Tooling API — Apex, =SymbolTable=, anonymous execute
+** TODO Event monitoring — =EventLogFile= retrieve + decode
+
+* Phase 3 — Secondary surface [0/?]
+:PROPERTIES:
+:GOAL: Less-common but well-shaped REST resources.
+:END:
+** TODO Quick actions =/sobjects/{SObject}/quickActions=
+** TODO Layouts =/sobjects/{SObject}/describe/layouts=
+** TODO List views =/sobjects/{SObject}/listviews=
+** TODO Recent items =/recent=
+** TODO Process automation — =/process/approvals=, =/process/rules=
+** TODO Theme =/theme=
+** TODO Tabs =/tabs=
+** TODO Connect REST API — feeds, chatter, communities (separate guide; large)
+** TODO UI API =/ui-api/...= — record / record-defaults / picklist-values
+** TODO GraphQL =/services/data/vXX.X/graphql= — single endpoint, schema-driven
+
+* Phase 4 — Niche / specialized [0/?]
+** TODO Async query =/async-queries=
+** TODO Knowledge =/knowledgeManagement= and =/support/knowledgeArticles=
+** TODO Files / ContentVersion uploads — multipart, the only place we need new transport
+** TODO Streaming attachments / blob bodies — =/sobjects/{SObject}/{id}/{Field}=
+** TODO Embedded Service / chat
+** TODO Einstein, prediction services
+** TODO Wave / CRM Analytics
+** TODO Salesforce Functions
+** TODO Pub/Sub (gRPC, separate transport — likely a future crate)
+
+* SKIP — explicitly out of scope
+:PROPERTIES:
+:RATIONALE: Codify why we are *not* doing these so the question doesn't keep recurring.
+:END:
+** SKIP SOAP API
+- Marked legacy by Salesforce; REST + Bulk 2.0 cover its responsibilities.
+** SKIP Streaming API (CometD)
+- Superseded by Pub/Sub API (gRPC).
+** SKIP Console API
+- Browser/JS only — not a backend HTTP surface.
+** SKIP Username-Password OAuth flow
+- Salesforce-flagged legacy; intentionally omitted from auth set.
+** SKIP Reports & Dashboards REST
+- Tentative — revisit if a consumer asks. Large surface, narrow audience.
+
+* Vertical / industry guides — gauge demand before scoping
+:PROPERTIES:
+:NOTE: Each is a separate guide on developer.salesforce.com. Do not implement speculatively.
+:END:
+- [ ] Financial Services Cloud
+- [ ] Health Cloud
+- [ ] Loyalty Management
+- [ ] Manufacturing Cloud
+- [ ] Consumer Goods Cloud
+- [ ] Field Service
+- [ ] Education Cloud / EDA
+- [ ] Nonprofit Cloud
+- [ ] Net Zero Cloud
+- [ ] Public Sector
+- [ ] Automotive Cloud
+- [ ] Media Cloud
+
+* Cross-cutting infrastructure [1/?]
+** DONE Open-ended client escape hatch
+- Public =get= / =get_with_query= / =post= / =put= / =patch= / =delete= on =Cloudburst=, plus =request_builder(method, path)= (auth-injected) and =execute(reqwest::Request)= (hands-off) for full bypass.
+- Three-mode path resolution in =Cloudburst::resolve_url=: relative → versioned, leading-=/= → instance-rooted, =http(s)://= → passthrough. Locks in the [[*Design principle: open-ended client (octocrab-style escape hatch)][design-principle contract]].
+- Existing handlers (=versions=, =query::query_more=) migrated to use the public =get=; legacy =get_unversioned= / =versioned_url= / =instance_url= / =send_versioned= helpers removed.
+- *Note for the next builder:* with the escape hatch in place, every new typed handler should layer over the public verbs (or =versioned_segments= + =send_at= when path encoding is needed) — not introduce parallel transport code.
+** TODO Standardize handler module template (request → builder → execute → typed response)
+** TODO Pagination iterator/stream abstraction (=nextRecordsUrl=, =nextPageUrl=, =nextRecordsLocator=)
+** TODO Retry + backoff policy (=429=, =503=, transient =5xx=)
+** TODO Rate-limit header surfacing (=Sforce-Limit-Info=)
+** TODO API version selection / negotiation (default to "latest seen", allow override)
+** TODO Conditional requests (=If-Modified-Since=, =If-Match=) where Salesforce honors them
+** TODO Tracing / =tracing= integration (replacing the lint ban on =println!=)
+** TODO Wiremock test pass — happy/error paths per builder
+- Build-as-you-go: every new handler ships with wiremock coverage.
+- Distinct from live integration tests under [[*Pre-release gates][Pre-release gates]] — these stay fast and run on every CI build.
+** TODO Doc-test pass — every public builder gets one runnable example
+
+* Pre-release gates [0/2]
+:PROPERTIES:
+:GOAL: Must ship before the first crates.io release. Not blocking day-to-day handler work, but the SDK should not go public without these layers in place.
+:END:
+
+** TODO Property tests for URL / encoding / parser invariants [#B]
+- *What:* Add =proptest= as a dev-dependency and write property tests for the cheap-but-load-bearing helpers:
+  - =Cloudburst::versioned_segments= — for any segment string, the resulting URL parses back to the same segments and never contains =//= outside the scheme.
+  - =Cloudburst::versioned_url= / =Cloudburst::instance_url= — round-trip stability with arbitrary leading/trailing slashes on the path.
+  - =response::parse_response_bytes= — for any =(status, bytes)= input, the function returns =Result= and never panics. Pairs naturally with =unwrap_used = "deny"= already in =Cargo.toml=.
+  - SOQL escaping (when we add a builder) — escaped strings parse back to the original.
+- *Why:* The trailing-slash bug we hit during sObject CRUD would have been caught by a one-line property invariant. Property tests are the cheapest way to lock invariants on this layer.
+- *Effort:* Small. ~1 day to add =proptest=, write ~5 properties, integrate with =cargo nextest=.
+
+** TODO Live integration tests against a Salesforce dev/scratch org [#A]
+- *What:* End-to-end tests that hit a real Salesforce org over HTTPS, gated behind an environment variable so they never run in default CI.
+  - Suggested gate: =CLOUDBURST_INTEGRATION=1= + =CLOUDBURST_INTEGRATION_INSTANCE_URL= + a token (from a sops-encrypted file or =.env=).
+  - Place under =tests/integration/= as a separate test target with =#[ignore]= on every test, opted in via =cargo nextest run --run-ignored only=.
+  - Starter suite: auth round-trip (JWT bearer), =versions=, =limits=, one sObject CRUD cycle on a disposable record (create → retrieve → update → delete), one =query= round-trip with pagination.
+  - Hard guard: refuse to run if =CLOUDBURST_INTEGRATION_INSTANCE_URL= contains =my.salesforce.com= (production My Domain) without an explicit =CLOUDBURST_INTEGRATION_ALLOW_PRODUCTION=1= override.
+- *Why:* Mock tests assert against the wire shape *we wrote*. Only real responses falsify our assumptions about Salesforce — wire-shape drift across releases is the highest-impact bug class for an HTTP SDK and nothing else catches it.
+- *Effort:* Medium. Half-day for the harness + guards, ~1 day to flesh out the starter suite. CI integration optional (can stay developer-run until 1.0).
+- *Dependency:* Needs a Salesforce dev/scratch org. SFDX can spin scratch orgs on demand if we want truly disposable per-run orgs, but a long-lived dev org is fine for v1.
+
+* Housekeeping
+** TODO Cleanup commit: =cargo fmt= drift in older files (=auth/jwt.rs:201=, etc.)
+** TODO First =cargo-release= dry-run once ~3 builders shipped

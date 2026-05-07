@@ -17,7 +17,7 @@ impl Cloudburst {
     ///
     /// [`CloudburstBuilder::api_version`]: crate::CloudburstBuilder::api_version
     pub async fn versions(&self) -> CloudburstResult<Vec<ApiVersion>> {
-        self.get_unversioned("/services/data").await
+        self.get("/services/data").await
     }
 }
 

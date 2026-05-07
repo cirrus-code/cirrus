@@ -17,4 +17,8 @@
 //!
 //! [`Cloudburst`]: crate::Cloudburst
 
+pub mod limits;
+pub mod query;
+pub mod search;
+pub mod sobjects;
 pub mod versions;

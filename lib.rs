@@ -50,7 +50,10 @@ mod response;
 
 pub use auth::{AuthSession, SharedAuth};
 pub use error::{CloudburstError, CloudburstResult, SalesforceError};
-pub use response::{ApiVersion, QueryResult, SObjectCreateResult};
+pub use response::{
+    ApiVersion, DescribeGlobal, Limit, OrgLimits, QueryResult, SObjectCreateResult,
+    SObjectMetadata, SearchResult,
+};
 
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use serde::Serialize;
@@ -112,91 +115,131 @@ impl Cloudburst {
         &self.auth
     }
 
-    /// Builds an absolute URL for a versioned REST path.
+    /// Resolves a path to a fully-qualified URL using three-mode semantics:
     ///
-    /// `path` may begin with or omit a leading slash. The resulting URL has
-    /// the shape `{instance_url}/services/data/{api_version}/{path}`.
-    pub(crate) fn versioned_url(&self, path: &str) -> String {
-        let path = path.trim_start_matches('/');
-        format!(
-            "{}/services/data/{}/{}",
+    /// - Fully-qualified (`http://…` or `https://…`): used as-is.
+    /// - Instance-rooted (leading `/`): resolved against the instance URL,
+    ///   e.g. `/services/data` → `{instance}/services/data`.
+    /// - Versioned (anything else): prefixed with `/services/data/{version}/`,
+    ///   e.g. `limits` → `{instance}/services/data/{version}/limits`.
+    ///
+    /// This is the path-resolution contract used by every public verb method
+    /// on [`Cloudburst`] and is the load-bearing piece of the open-ended
+    /// client escape hatch.
+    pub(crate) fn resolve_url(&self, path: &str) -> String {
+        if path.starts_with("http://") || path.starts_with("https://") {
+            path.to_string()
+        } else if let Some(rest) = path.strip_prefix('/') {
+            format!("{}/{}", self.auth.instance_url(), rest)
+        } else {
+            format!(
+                "{}/services/data/{}/{}",
+                self.auth.instance_url(),
+                self.api_version,
+                path
+            )
+        }
+    }
+
+    /// Builds a versioned URL by appending percent-encoded path segments.
+    ///
+    /// Use this when any segment may contain reserved characters (slash,
+    /// equals, percent, etc.) — e.g. an upsert external-ID value. Each
+    /// element of `segments` is encoded as a single path segment.
+    pub(crate) fn versioned_segments(&self, segments: &[&str]) -> CloudburstResult<String> {
+        let base = format!(
+            "{}/services/data/{}/",
             self.auth.instance_url(),
-            self.api_version,
-            path
-        )
+            self.api_version
+        );
+        let mut url = url::Url::parse(&base)?;
+        // The trailing '/' on `base` leaves an empty path segment; without
+        // popping it, `extend` produces `.../v60.0//sobjects/...`.
+        url.path_segments_mut()
+            .map_err(|()| {
+                CloudburstError::InvalidResponse("instance URL is not hierarchical".into())
+            })?
+            .pop_if_empty()
+            .extend(segments);
+        Ok(url.to_string())
     }
 
-    /// Builds an absolute URL relative to the instance URL, without the
-    /// `/services/data/{version}` prefix. Used for endpoints that live
-    /// outside the versioned tree (e.g. `/services/data` itself, OAuth
-    /// endpoints, Apex REST under `/services/apexrest`).
-    pub(crate) fn instance_url(&self, path: &str) -> String {
-        let path = path.trim_start_matches('/');
-        format!("{}/{}", self.auth.instance_url(), path)
-    }
-
-    /// Internal: GET a versioned path and deserialize the response into `R`.
-    #[allow(dead_code)]
-    pub(crate) async fn get<R: DeserializeOwned>(&self, path: &str) -> CloudburstResult<R> {
-        self.send_versioned(reqwest::Method::GET, path, None::<&()>, None::<&()>)
+    /// GET an arbitrary Salesforce path, deserializing the response into `R`.
+    ///
+    /// Path resolution follows [`Cloudburst::resolve_url`]'s three-mode
+    /// semantics. Use this as the open-ended client escape hatch when no
+    /// typed builder exists for the resource you need.
+    pub async fn get<R: DeserializeOwned>(&self, path: &str) -> CloudburstResult<R> {
+        let url = self.resolve_url(path);
+        self.send::<R, (), ()>(reqwest::Method::GET, &url, None, None)
             .await
     }
 
-    /// Internal: GET a versioned path with query parameters.
-    #[allow(dead_code)]
-    pub(crate) async fn get_with_query<R, Q>(&self, path: &str, query: &Q) -> CloudburstResult<R>
+    /// GET with query parameters. `query` is anything `Serialize` —
+    /// typically `&[("k", "v")]` or a struct.
+    pub async fn get_with_query<R, Q>(&self, path: &str, query: &Q) -> CloudburstResult<R>
     where
         R: DeserializeOwned,
         Q: Serialize + ?Sized,
     {
-        self.send_versioned(reqwest::Method::GET, path, Some(query), None::<&()>)
+        let url = self.resolve_url(path);
+        self.send::<R, Q, ()>(reqwest::Method::GET, &url, Some(query), None)
             .await
     }
 
-    /// Internal: POST a JSON body to a versioned path.
-    #[allow(dead_code)]
-    pub(crate) async fn post<R, B>(&self, path: &str, body: &B) -> CloudburstResult<R>
+    /// POST a JSON body.
+    pub async fn post<R, B>(&self, path: &str, body: &B) -> CloudburstResult<R>
     where
         R: DeserializeOwned,
         B: Serialize + ?Sized,
     {
-        self.send_versioned(reqwest::Method::POST, path, None::<&()>, Some(body))
+        let url = self.resolve_url(path);
+        self.send::<R, (), B>(reqwest::Method::POST, &url, None, Some(body))
             .await
     }
 
-    /// Internal: PATCH a JSON body to a versioned path.
-    #[allow(dead_code)]
-    pub(crate) async fn patch<R, B>(&self, path: &str, body: &B) -> CloudburstResult<R>
+    /// PUT a JSON body.
+    ///
+    /// Salesforce REST proper rarely uses PUT — it's included for symmetry
+    /// with the rest of the verb set so the escape hatch can address any
+    /// Salesforce surface (Tooling API, Apex REST, etc.) that does.
+    pub async fn put<R, B>(&self, path: &str, body: &B) -> CloudburstResult<R>
     where
         R: DeserializeOwned,
         B: Serialize + ?Sized,
     {
-        self.send_versioned(reqwest::Method::PATCH, path, None::<&()>, Some(body))
+        let url = self.resolve_url(path);
+        self.send::<R, (), B>(reqwest::Method::PUT, &url, None, Some(body))
             .await
     }
 
-    /// Internal: DELETE a versioned path.
-    #[allow(dead_code)]
-    pub(crate) async fn delete<R: DeserializeOwned>(&self, path: &str) -> CloudburstResult<R> {
-        self.send_versioned(reqwest::Method::DELETE, path, None::<&()>, None::<&()>)
+    /// PATCH a JSON body.
+    pub async fn patch<R, B>(&self, path: &str, body: &B) -> CloudburstResult<R>
+    where
+        R: DeserializeOwned,
+        B: Serialize + ?Sized,
+    {
+        let url = self.resolve_url(path);
+        self.send::<R, (), B>(reqwest::Method::PATCH, &url, None, Some(body))
             .await
     }
 
-    /// Internal: GET an unversioned (instance-relative) path. Used for
-    /// `/services/data` (the version index) and similar.
-    pub(crate) async fn get_unversioned<R: DeserializeOwned>(
-        &self,
-        path: &str,
-    ) -> CloudburstResult<R> {
-        let url = self.instance_url(path);
-        self.send(reqwest::Method::GET, &url, None::<&()>, None::<&()>)
+    /// DELETE a resource. Salesforce typically returns 204 No Content on
+    /// success — call with `R = ()`.
+    pub async fn delete<R: DeserializeOwned>(&self, path: &str) -> CloudburstResult<R> {
+        let url = self.resolve_url(path);
+        self.send::<R, (), ()>(reqwest::Method::DELETE, &url, None, None)
             .await
     }
 
-    async fn send_versioned<R, Q, B>(
+    /// Internal: send a request to a fully-built absolute URL. Used by
+    /// handlers that need percent-encoded path segments (sObject upsert by
+    /// external ID, for example) — they construct the URL via
+    /// [`Self::versioned_segments`] and dispatch through this method.
+    pub(crate) async fn send_at<R, Q, B>(
         &self,
         method: reqwest::Method,
-        path: &str,
+        url: &str,
         query: Option<&Q>,
         body: Option<&B>,
     ) -> CloudburstResult<R>
@@ -205,8 +248,41 @@ impl Cloudburst {
         Q: Serialize + ?Sized,
         B: Serialize + ?Sized,
     {
-        let url = self.versioned_url(path);
-        self.send(method, &url, query, body).await
+        self.send(method, url, query, body).await
+    }
+
+    /// Returns a pre-authenticated [`reqwest::RequestBuilder`] targeting
+    /// the resolved URL. Path resolution follows
+    /// [`Cloudburst::resolve_url`]'s three-mode semantics; the bearer
+    /// token is injected via [`AuthSession::access_token`]. The caller is
+    /// then free to add headers, configure timeouts, set a custom body
+    /// (multipart, form, raw bytes), and `.send()` the request.
+    ///
+    /// Response parsing is *not* applied — call sites that want
+    /// Salesforce-error-aware deserialization should use the typed verb
+    /// methods ([`Self::get`], [`Self::post`], etc.) instead.
+    pub async fn request_builder(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+    ) -> CloudburstResult<reqwest::RequestBuilder> {
+        let url = self.resolve_url(path);
+        let token = self.auth.access_token().await?;
+        Ok(self.client.request(method, url).bearer_auth(&*token))
+    }
+
+    /// Executes a fully-prepared [`reqwest::Request`] using the SDK's
+    /// HTTP client.
+    ///
+    /// Hands-off passthrough — no auth injection, no URL resolution, no
+    /// response parsing. Useful for unusual cases where the caller has
+    /// constructed the entire request themselves and just wants to share
+    /// the SDK's connection pool.
+    ///
+    /// To get an auth token for a custom request, use
+    /// `client.auth().access_token().await?`.
+    pub async fn execute(&self, request: reqwest::Request) -> CloudburstResult<reqwest::Response> {
+        self.client.execute(request).await.map_err(Into::into)
     }
 
     async fn send<R, Q, B>(
@@ -329,9 +405,16 @@ mod tests {
     }
 
     #[test]
-    fn versioned_url_uses_default_api_version() {
+    fn resolve_url_versioned_for_relative_path() {
         let sf = fixture("https://my.salesforce.com");
-        let url = sf.versioned_url("/sobjects/Account/001");
+        let url = sf.resolve_url("limits");
+        assert_eq!(url, "https://my.salesforce.com/services/data/v60.0/limits");
+    }
+
+    #[test]
+    fn resolve_url_versioned_for_nested_relative_path() {
+        let sf = fixture("https://my.salesforce.com");
+        let url = sf.resolve_url("sobjects/Account/001");
         assert_eq!(
             url,
             "https://my.salesforce.com/services/data/v60.0/sobjects/Account/001"
@@ -339,17 +422,24 @@ mod tests {
     }
 
     #[test]
-    fn versioned_url_handles_path_without_leading_slash() {
+    fn resolve_url_instance_rooted_for_leading_slash() {
         let sf = fixture("https://my.salesforce.com");
-        let url = sf.versioned_url("limits");
-        assert_eq!(url, "https://my.salesforce.com/services/data/v60.0/limits");
+        let url = sf.resolve_url("/services/data");
+        assert_eq!(url, "https://my.salesforce.com/services/data");
     }
 
     #[test]
-    fn instance_url_skips_versioned_prefix() {
+    fn resolve_url_passthrough_for_https_url() {
         let sf = fixture("https://my.salesforce.com");
-        let url = sf.instance_url("/services/data");
-        assert_eq!(url, "https://my.salesforce.com/services/data");
+        let absolute = "https://other.example.com/some/path";
+        assert_eq!(sf.resolve_url(absolute), absolute);
+    }
+
+    #[test]
+    fn resolve_url_passthrough_for_http_url() {
+        let sf = fixture("https://my.salesforce.com");
+        let absolute = "http://localhost:1234/path";
+        assert_eq!(sf.resolve_url(absolute), absolute);
     }
 
     #[test]
@@ -361,6 +451,176 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(sf.api_version(), "v61.0");
-        assert!(sf.versioned_url("/x").contains("/v61.0/"));
+        assert!(sf.resolve_url("x").contains("/v61.0/"));
+    }
+
+    mod escape_hatch {
+        use super::*;
+        use serde_json::{Value, json};
+        use wiremock::matchers::{body_json, header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn server_fixture(uri: String) -> Cloudburst {
+            let auth = Arc::new(StaticTokenAuth::new("tok", uri));
+            Cloudburst::builder().auth(auth).build().unwrap()
+        }
+
+        #[tokio::test]
+        async fn get_resolves_relative_path_as_versioned() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .and(header("authorization", "Bearer tok"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+                .mount(&server)
+                .await;
+
+            let sf = server_fixture(server.uri());
+            let v: Value = sf.get("limits").await.unwrap();
+            assert_eq!(v["ok"], true);
+        }
+
+        #[tokio::test]
+        async fn get_resolves_leading_slash_as_instance_rooted() {
+            let server = MockServer::start().await;
+            // Note: /services/apexrest/foo lives outside the versioned tree,
+            // so passing a leading-slash path is the only correct way.
+            Mock::given(method("GET"))
+                .and(path("/services/apexrest/foo"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"called": "apex"})))
+                .mount(&server)
+                .await;
+
+            let sf = server_fixture(server.uri());
+            let v: Value = sf.get("/services/apexrest/foo").await.unwrap();
+            assert_eq!(v["called"], "apex");
+        }
+
+        #[tokio::test]
+        async fn get_passes_through_absolute_url() {
+            // The "passthrough" mode targets a different host entirely from
+            // the configured instance URL, proving resolve_url didn't try to
+            // prefix it.
+            let other = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/some/other/path"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"hit": "other"})))
+                .mount(&other)
+                .await;
+
+            let sf = server_fixture("https://unused.invalid".to_string());
+            let target = format!("{}/some/other/path", other.uri());
+            let v: Value = sf.get(&target).await.unwrap();
+            assert_eq!(v["hit"], "other");
+        }
+
+        #[tokio::test]
+        async fn post_sends_json_body() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/services/data/v60.0/composite/batch"))
+                .and(body_json(json!({"batchRequests": []})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"results": []})))
+                .mount(&server)
+                .await;
+
+            let sf = server_fixture(server.uri());
+            let v: Value = sf
+                .post("composite/batch", &json!({"batchRequests": []}))
+                .await
+                .unwrap();
+            assert!(v["results"].is_array());
+        }
+
+        #[tokio::test]
+        async fn put_sends_json_body() {
+            let server = MockServer::start().await;
+            Mock::given(method("PUT"))
+                .and(path("/services/data/v60.0/custom/resource"))
+                .and(body_json(json!({"k": "v"})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"updated": true})))
+                .mount(&server)
+                .await;
+
+            let sf = server_fixture(server.uri());
+            let v: Value = sf.put("custom/resource", &json!({"k": "v"})).await.unwrap();
+            assert_eq!(v["updated"], true);
+        }
+
+        #[tokio::test]
+        async fn patch_sends_json_body() {
+            let server = MockServer::start().await;
+            Mock::given(method("PATCH"))
+                .and(path("/services/data/v60.0/sobjects/Account/001"))
+                .and(body_json(json!({"Name": "X"})))
+                .respond_with(ResponseTemplate::new(204))
+                .mount(&server)
+                .await;
+
+            let sf = server_fixture(server.uri());
+            sf.patch::<(), _>("sobjects/Account/001", &json!({"Name": "X"}))
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn delete_handles_204() {
+            let server = MockServer::start().await;
+            Mock::given(method("DELETE"))
+                .and(path("/services/data/v60.0/sobjects/Account/001"))
+                .respond_with(ResponseTemplate::new(204))
+                .mount(&server)
+                .await;
+
+            let sf = server_fixture(server.uri());
+            sf.delete::<()>("sobjects/Account/001").await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn request_builder_pre_injects_bearer_auth() {
+            // Verifies the returned RequestBuilder already has the auth
+            // header set — a caller adding their own headers shouldn't
+            // need to re-attach the bearer token.
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .and(header("authorization", "Bearer tok"))
+                .and(header("x-custom", "added-by-caller"))
+                .respond_with(ResponseTemplate::new(200))
+                .mount(&server)
+                .await;
+
+            let sf = server_fixture(server.uri());
+            let resp = sf
+                .request_builder(reqwest::Method::GET, "limits")
+                .await
+                .unwrap()
+                .header("X-Custom", "added-by-caller")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status().as_u16(), 200);
+        }
+
+        #[tokio::test]
+        async fn execute_runs_caller_built_request() {
+            // execute() is fully hands-off — no auth injection. Caller is
+            // responsible for everything. Used here without a bearer token
+            // intentionally to prove no auth is injected.
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/raw/path"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"raw": true})))
+                .mount(&server)
+                .await;
+
+            let sf = server_fixture(server.uri());
+            let url = format!("{}/raw/path", server.uri());
+            let req = sf.http_client().get(&url).build().unwrap();
+            let resp = sf.execute(req).await.unwrap();
+            assert_eq!(resp.status().as_u16(), 200);
+            let body: Value = resp.json().await.unwrap();
+            assert_eq!(body["raw"], true);
+        }
     }
 }

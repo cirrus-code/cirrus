@@ -17,6 +17,7 @@
 use crate::error::{CloudburstError, CloudburstResult, SalesforceError};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use std::collections::HashMap;
 
 /// Envelope returned by SOQL queries (`/query`, `/queryAll`, `/query/{locator}`).
 ///
@@ -37,6 +38,27 @@ pub struct QueryResult<R> {
     pub records: Vec<R>,
 }
 
+/// Envelope returned by SOSL search endpoints (`/search`,
+/// `/parameterizedSearch`).
+///
+/// Generic over the record type `R`. Every record carries a Salesforce
+/// `attributes` object identifying the object type and self-URL — surface
+/// it on your `R` if you need it (e.g. `#[serde(flatten)] attributes:
+/// HashMap<String, Value>`).
+///
+/// `metadata` is populated only when the caller explicitly requests it
+/// (`metadata=LABELS` on the search call). Its shape is flexible enough
+/// across versions that we surface it as raw JSON.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchResult<R> {
+    /// Hit records, in Salesforce-defined relevance order.
+    #[serde(rename = "searchRecords", default = "Vec::new")]
+    pub search_records: Vec<R>,
+    /// Field-label metadata, present only when the request asked for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
 /// Result of a single-record create/upsert via REST sObjects endpoints.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SObjectCreateResult {
@@ -52,6 +74,82 @@ pub struct SObjectCreateResult {
     /// existing one. Absent on plain creates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<bool>,
+}
+
+/// One limit entry from `GET /services/data/vXX.X/limits`.
+///
+/// Most limits are flat `{Max, Remaining}` pairs. A few (notably
+/// `PermissionSets`) embed sub-limits with the same shape — those are
+/// captured in [`Limit::nested`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct Limit {
+    /// Maximum allocation for the org.
+    #[serde(rename = "Max")]
+    pub max: i64,
+    /// Remaining allocation, accurate to within five minutes per the docs.
+    #[serde(rename = "Remaining")]
+    pub remaining: i64,
+    /// Sub-limits keyed by name. Empty for flat limits; populated for
+    /// composite ones such as `PermissionSets.CreateCustom`.
+    #[serde(flatten)]
+    pub nested: HashMap<String, Limit>,
+}
+
+/// Top-level response from `GET /limits` — keys are limit names.
+pub type OrgLimits = HashMap<String, Limit>;
+
+/// Response from `GET /sobjects` (describe global). Schema-independent
+/// platform metadata — concrete because every org returns the same shape.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DescribeGlobal {
+    /// Org's character encoding (typically `"UTF-8"`).
+    pub encoding: String,
+    /// Maximum batch size permitted in queries against this org.
+    #[serde(rename = "maxBatchSize")]
+    pub max_batch_size: i32,
+    /// One entry per object visible to the authenticated user.
+    pub sobjects: Vec<SObjectMetadata>,
+}
+
+/// Per-object metadata returned in [`DescribeGlobal::sobjects`]. Mirrors the
+/// flags Salesforce documents for the describe-global response.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SObjectMetadata {
+    pub activateable: bool,
+    pub createable: bool,
+    pub custom: bool,
+    #[serde(rename = "customSetting")]
+    pub custom_setting: bool,
+    pub deletable: bool,
+    #[serde(rename = "deprecatedAndHidden")]
+    pub deprecated_and_hidden: bool,
+    #[serde(rename = "feedEnabled")]
+    pub feed_enabled: bool,
+    /// Three-character record-ID prefix (e.g. `"001"` for Account). `None`
+    /// for objects without a stable prefix.
+    #[serde(rename = "keyPrefix", default)]
+    pub key_prefix: Option<String>,
+    pub label: String,
+    #[serde(rename = "labelPlural")]
+    pub label_plural: String,
+    pub layoutable: bool,
+    pub mergeable: bool,
+    #[serde(rename = "mruEnabled")]
+    pub mru_enabled: bool,
+    /// API name of the object, e.g. `"Account"`, `"My_Object__c"`.
+    pub name: String,
+    pub queryable: bool,
+    pub replicateable: bool,
+    pub retrieveable: bool,
+    pub searchable: bool,
+    pub triggerable: bool,
+    pub undeletable: bool,
+    pub updateable: bool,
+    /// Map of related URL slugs (`sobject`, `describe`, `rowTemplate`,
+    /// plus per-feature URLs that vary by object). Kept as a generic map
+    /// because Salesforce adds keys here across API versions.
+    #[serde(default)]
+    pub urls: HashMap<String, String>,
 }
 
 /// One entry from `GET /services/data` — a Salesforce REST API version.
@@ -189,6 +287,182 @@ mod tests {
     fn empty_2xx_body_is_treated_as_null() {
         let parsed: Option<Value> = parse_response_bytes(204, b"").unwrap();
         assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn parses_flat_limit() {
+        let body = r#"{"Max": 5000, "Remaining": 4937}"#;
+        let limit: Limit = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert_eq!(limit.max, 5000);
+        assert_eq!(limit.remaining, 4937);
+        assert!(limit.nested.is_empty());
+    }
+
+    #[test]
+    fn parses_nested_limit() {
+        // PermissionSets is the canonical nested case from the docs.
+        let body = r#"{
+            "Max": 1500,
+            "Remaining": 1499,
+            "CreateCustom": {"Max": 1000, "Remaining": 999}
+        }"#;
+        let limit: Limit = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert_eq!(limit.max, 1500);
+        assert_eq!(limit.remaining, 1499);
+        assert_eq!(limit.nested.len(), 1);
+        let nested = limit.nested.get("CreateCustom").unwrap();
+        assert_eq!(nested.max, 1000);
+        assert_eq!(nested.remaining, 999);
+        assert!(nested.nested.is_empty());
+    }
+
+    #[test]
+    fn parses_org_limits_envelope() {
+        let body = json!({
+            "DailyApiRequests": {"Max": 5000, "Remaining": 4937},
+            "PermissionSets": {
+                "Max": 1500,
+                "Remaining": 1499,
+                "CreateCustom": {"Max": 1000, "Remaining": 999}
+            }
+        })
+        .to_string();
+        let limits: OrgLimits = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert_eq!(limits.len(), 2);
+        assert_eq!(limits.get("DailyApiRequests").unwrap().remaining, 4937);
+        assert_eq!(
+            limits
+                .get("PermissionSets")
+                .unwrap()
+                .nested
+                .get("CreateCustom")
+                .unwrap()
+                .max,
+            1000
+        );
+    }
+
+    #[test]
+    fn parses_describe_global() {
+        let body = json!({
+            "encoding": "UTF-8",
+            "maxBatchSize": 200,
+            "sobjects": [{
+                "activateable": false,
+                "custom": false,
+                "customSetting": false,
+                "createable": true,
+                "deletable": true,
+                "deprecatedAndHidden": false,
+                "feedEnabled": true,
+                "keyPrefix": "001",
+                "label": "Account",
+                "labelPlural": "Accounts",
+                "layoutable": true,
+                "mergeable": true,
+                "mruEnabled": true,
+                "name": "Account",
+                "queryable": true,
+                "replicateable": true,
+                "retrieveable": true,
+                "searchable": true,
+                "triggerable": true,
+                "undeletable": true,
+                "updateable": true,
+                "urls": {
+                    "sobject": "/services/data/v60.0/sobjects/Account",
+                    "describe": "/services/data/v60.0/sobjects/Account/describe",
+                    "rowTemplate": "/services/data/v60.0/sobjects/Account/{ID}"
+                }
+            }]
+        })
+        .to_string();
+        let dg: DescribeGlobal = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert_eq!(dg.encoding, "UTF-8");
+        assert_eq!(dg.max_batch_size, 200);
+        assert_eq!(dg.sobjects.len(), 1);
+        assert_eq!(dg.sobjects[0].name, "Account");
+        assert_eq!(dg.sobjects[0].key_prefix.as_deref(), Some("001"));
+        assert_eq!(
+            dg.sobjects[0].urls.get("describe").map(String::as_str),
+            Some("/services/data/v60.0/sobjects/Account/describe")
+        );
+    }
+
+    #[test]
+    fn describe_global_handles_missing_key_prefix() {
+        // Some objects (junction objects, certain settings) have no key prefix.
+        let body = json!({
+            "encoding": "UTF-8",
+            "maxBatchSize": 200,
+            "sobjects": [{
+                "activateable": false, "custom": false, "customSetting": false,
+                "createable": false, "deletable": false, "deprecatedAndHidden": false,
+                "feedEnabled": false, "label": "Foo", "labelPlural": "Foos",
+                "layoutable": false, "mergeable": false, "mruEnabled": false,
+                "name": "FooSetting", "queryable": false, "replicateable": false,
+                "retrieveable": false, "searchable": false, "triggerable": false,
+                "undeletable": false, "updateable": false, "urls": {}
+            }]
+        })
+        .to_string();
+        let dg: DescribeGlobal = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert!(dg.sobjects[0].key_prefix.is_none());
+    }
+
+    #[test]
+    fn parses_search_result() {
+        let body = json!({
+            "searchRecords": [
+                {
+                    "attributes": {
+                        "type": "Account",
+                        "url": "/services/data/v60.0/sobjects/Account/001xx"
+                    },
+                    "Id": "001xx"
+                },
+                {
+                    "attributes": {
+                        "type": "Contact",
+                        "url": "/services/data/v60.0/sobjects/Contact/003yy"
+                    },
+                    "Id": "003yy"
+                }
+            ]
+        })
+        .to_string();
+        let sr: SearchResult<Value> = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert_eq!(sr.search_records.len(), 2);
+        assert_eq!(sr.search_records[0]["attributes"]["type"], "Account");
+        assert_eq!(sr.search_records[1]["Id"], "003yy");
+        assert!(sr.metadata.is_none());
+    }
+
+    #[test]
+    fn parses_search_result_with_metadata() {
+        let body = json!({
+            "searchRecords": [],
+            "metadata": {
+                "entityMetadata": [
+                    {"entityName": "Account", "fieldMetadata": [
+                        {"name": "Name", "label": "Account Name"}
+                    ]}
+                ]
+            }
+        })
+        .to_string();
+        let sr: SearchResult<Value> = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert!(sr.search_records.is_empty());
+        let md = sr.metadata.expect("metadata present");
+        assert!(md["entityMetadata"].is_array());
+    }
+
+    #[test]
+    fn parses_empty_search_result() {
+        // No hits at all — searchRecords absent or empty.
+        let body = r#"{"searchRecords": []}"#;
+        let sr: SearchResult<Value> = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert!(sr.search_records.is_empty());
     }
 
     #[test]

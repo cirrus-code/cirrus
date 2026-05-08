@@ -50,8 +50,10 @@ mod response;
 
 pub use auth::{AuthSession, SharedAuth};
 pub use error::{CloudburstError, CloudburstResult, SalesforceError};
+pub use handlers::composite::{BatchRequest, BatchSubrequest};
 pub use response::{
-    ApiVersion, DescribeGlobal, Limit, OrgLimits, QueryResult, SObjectCreateResult,
+    ApiVersion, BatchResponse, BatchSubresult, CompositeTreeError, CompositeTreeResponse,
+    CompositeTreeResult, DescribeGlobal, Limit, OrgLimits, QueryResult, SObjectCreateResult,
     SObjectMetadata, SearchResult,
 };
 

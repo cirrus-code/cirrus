@@ -17,6 +17,7 @@
 //!
 //! [`Cloudburst`]: crate::Cloudburst
 
+pub mod composite;
 pub mod limits;
 pub mod query;
 pub mod search;

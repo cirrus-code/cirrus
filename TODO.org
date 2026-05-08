@@ -5,9 +5,9 @@
 
 * Status snapshot
 - Auth flows: 5/5 priority flows shipped (JWT, Refresh, Client Credentials, Web Server PKCE, Token Exchange).
-- API surface: 6/10 Phase 1 builders shipped (=versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=).
+- API surface: 7/10 Phase 1 + composite/tree (Phase 2) shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=.
 - Open-ended client escape hatch shipped: =get= / =get_with_query= / =post= / =put= / =patch= / =delete= / =request_builder= / =execute= on =Cloudburst= with three-mode path resolution. Cross-cutting infrastructure unblocked.
-- Test count baseline: 122 unit + 2 doctest, all passing; clippy clean.
+- Test count baseline: 138 unit + 2 doctest, all passing; clippy clean.
 
 * Design principle: open-ended client (octocrab-style escape hatch)
 :PROPERTIES:
@@ -86,7 +86,7 @@ either typed JSON or =serde_json::Value=.
 - [ ] Device Flow — likely =SKIP= unless a CLI consumer materializes
 - [ ] Asset Token Flow — likely =SKIP=, IoT-only
 
-* Phase 1 — MVP REST API surface [6/10]
+* Phase 1 — MVP REST API surface [7/10]
 :PROPERTIES:
 :GOAL: Exercise the auth layer end-to-end and lock in the request/response/handler shape that all later tiers reuse.
 :END:
@@ -111,14 +111,21 @@ either typed JSON or =serde_json::Value=.
 - =search(sosl)= for SOSL strings; =parameterized_search(body)= for the structured POST form.
 - =SearchResult<R>= envelope alongside =QueryResult<R>=; =metadata= surfaced as raw =serde_json::Value= because its shape changes across versions.
 - *Deliberately omitted:* the =GET /parameterizedSearch?q=…&sobject=…= form. The POST form is strictly more capable; if a caller really needs the GET form they can hit it via the open-ended client escape hatch (once it lands).
-** TODO =/services/data/vXX.X/composite/batch= [#A]
-- Up to 25 sub-requests in one round trip; the fan-out primitive for the rest of Phase 1.
+** DONE =/services/data/vXX.X/composite/batch= (=handlers::composite=)
+- =Cloudburst::composite().batch(body)= sends up to 25 sub-requests in one round trip and returns =BatchResponse= with =has_errors= + =Vec<BatchSubresult>=.
+- Typed =BatchRequest= / =BatchSubrequest= request structs in =handlers::composite=, alongside =serde_json::json!({...})= bodies via the generic =Serialize= bound.
+- Per-subrequest failures are *not* translated into transport errors — Salesforce returns HTTP 200 for the outer call and the caller inspects =has_errors= + =BatchSubresult::is_success()=. Top-level batch deserialization errors (e.g. invalid sub-request URL) still surface as =CloudburstError::Api=.
+- Sub-request URLs do not flow through =resolve_url=; they are version-prefixed strings (=v60.0/sobjects/...=) per Salesforce's documented dispatch under =/services/data/=.
 
-* Phase 2 — Power-user surface [0/?]
+* Phase 2 — Power-user surface [1/?]
 :PROPERTIES:
 :GOAL: Cover the requests jsforce/simple-salesforce users reach for after CRUD.
 :END:
-** TODO Composite tree =/composite/tree/{SObject}= — nested inserts in one call
+** DONE Composite tree =/composite/tree/{SObject}= (=handlers::composite::tree=)
+- =Cloudburst::composite().tree(sobject, body)= POSTs an arbitrary tree envelope and returns =CompositeTreeResponse= with =has_errors= + =Vec<CompositeTreeResult>=.
+- Distinct =CompositeTreeError= struct because Salesforce uses =statusCode= (string enum, e.g. =INVALID_EMAIL_ADDRESS=) here instead of the standard =errorCode= surfaced by =SalesforceError=.
+- *All-or-nothing semantics:* if =has_errors= is true, the entire tree was rolled back — =results= lists only the failing =referenceId=s, not all records. Documented on the response struct so callers don't iterate looking for partial successes.
+- Limits documented in handler: 200 records total, 5 distinct sObject types, 5 levels of nesting.
 ** TODO Composite collections =/composite/sobjects= — bulk CRUD up to 200 records
 ** TODO Generic composite =/composite= — chained requests with ref binding
 ** TODO Bulk API 2.0 (=/jobs/ingest=, =/jobs/query=) — async CSV ingest/query

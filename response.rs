@@ -163,6 +163,119 @@ pub struct ApiVersion {
     pub version: String,
 }
 
+/// Top-level response from `POST /composite/batch`.
+///
+/// Salesforce always returns HTTP 200 for a well-formed batch even when
+/// individual sub-requests fail — per-subrequest failures are surfaced via
+/// [`has_errors`](Self::has_errors) and the `statusCode` on each
+/// [`BatchSubresult`]. Translating sub-failures into transport errors would
+/// drop the partial successes in the same response, so callers inspect
+/// results directly.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BatchResponse {
+    /// `true` when at least one sub-request returned a 4xx/5xx status.
+    #[serde(rename = "hasErrors")]
+    pub has_errors: bool,
+    /// One entry per sub-request, in the order submitted.
+    #[serde(default = "Vec::new")]
+    pub results: Vec<BatchSubresult>,
+}
+
+/// One sub-request result inside [`BatchResponse::results`].
+///
+/// `result` is the body returned by the sub-request — a record on success,
+/// `null` for a 204 No Content (e.g. PATCH/DELETE), or a Salesforce error
+/// array on failure. Its shape is intentionally untyped because batch
+/// sub-requests are heterogeneous.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BatchSubresult {
+    /// HTTP status code returned by this sub-request.
+    #[serde(rename = "statusCode")]
+    pub status_code: u16,
+    /// Sub-request response body, or `Value::Null` for 204 responses.
+    #[serde(default)]
+    pub result: serde_json::Value,
+}
+
+impl BatchSubresult {
+    /// `true` if this sub-request succeeded (`status_code` in 200..300).
+    pub fn is_success(&self) -> bool {
+        (200..300).contains(&self.status_code)
+    }
+}
+
+/// Top-level response from `POST /composite/tree/{SObject}`.
+///
+/// **All-or-nothing semantics.** Unlike [`BatchResponse`], a tree request
+/// with any failing record rolls back *every* record in the request — no
+/// partial commits. If [`has_errors`](Self::has_errors) is `true`, none of
+/// the records in `results` were created; fix the listed errors and resend
+/// the entire tree.
+///
+/// The `results` collection therefore behaves differently in the two cases:
+/// on success it contains every record's `referenceId` → `id` mapping; on
+/// failure it contains *only* the records whose validation/save errored.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompositeTreeResponse {
+    /// `true` when the request rolled back due to one or more record errors.
+    #[serde(rename = "hasErrors")]
+    pub has_errors: bool,
+    /// On success: one entry per record with [`CompositeTreeResult::id`]
+    /// populated. On failure: only entries for the records that failed,
+    /// with [`CompositeTreeResult::errors`] populated instead.
+    #[serde(default = "Vec::new")]
+    pub results: Vec<CompositeTreeResult>,
+}
+
+/// One per-record entry in [`CompositeTreeResponse::results`].
+///
+/// `id` and `errors` form a soft union — exactly one is populated:
+/// - `Some(id)` / `None` on a successful create
+/// - `None` / `Some(errors)` on a failure
+///
+/// Modeled as two `Option`s rather than a tagged enum because the wire
+/// shape doesn't carry a discriminator and callers usually inspect by
+/// field presence rather than matching variants.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompositeTreeResult {
+    /// Caller-supplied reference ID echoed back from the request.
+    #[serde(rename = "referenceId")]
+    pub reference_id: String,
+    /// Salesforce ID of the created record. Populated only on success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Validation/save errors for this record. Populated only when this
+    /// record's create failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub errors: Option<Vec<CompositeTreeError>>,
+}
+
+impl CompositeTreeResult {
+    /// `true` if this record was created (`id` is set, `errors` is not).
+    pub fn is_success(&self) -> bool {
+        self.id.is_some() && self.errors.is_none()
+    }
+}
+
+/// Per-record error entry inside [`CompositeTreeResult::errors`].
+///
+/// Salesforce uses a **different shape** here from the standard REST error
+/// array surfaced as [`crate::SalesforceError`]: the field is `statusCode`
+/// (a string enum like `"INVALID_EMAIL_ADDRESS"`, not an HTTP code) rather
+/// than `errorCode`. Don't try to deserialize this from the standard error
+/// array shape and vice versa.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompositeTreeError {
+    /// String enum identifying the error (e.g. `"INVALID_EMAIL_ADDRESS"`).
+    #[serde(rename = "statusCode")]
+    pub status_code: String,
+    /// Human-readable explanation.
+    pub message: String,
+    /// Field API names contributing to the error, when applicable.
+    #[serde(default)]
+    pub fields: Vec<String>,
+}
+
 /// Parses a Salesforce response body, branching on the HTTP status.
 ///
 /// On 2xx, the body is deserialized into `R` (use `serde_json::Value` for an
@@ -463,6 +576,136 @@ mod tests {
         let body = r#"{"searchRecords": []}"#;
         let sr: SearchResult<Value> = parse_response_bytes(200, body.as_bytes()).unwrap();
         assert!(sr.search_records.is_empty());
+    }
+
+    #[test]
+    fn parses_batch_response_with_mixed_subresults() {
+        // Mirrors the documented example: one PATCH (204 → null result)
+        // followed by one GET (200 → record body).
+        let body = json!({
+            "hasErrors": false,
+            "results": [
+                {"statusCode": 204, "result": null},
+                {"statusCode": 200, "result": {
+                    "attributes": {"type": "Account"},
+                    "Id": "001D000000K0fXOIAZ",
+                    "Name": "NewName"
+                }}
+            ]
+        })
+        .to_string();
+        let resp: BatchResponse = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert!(!resp.has_errors);
+        assert_eq!(resp.results.len(), 2);
+        assert!(resp.results[0].is_success());
+        assert_eq!(resp.results[0].status_code, 204);
+        assert!(resp.results[0].result.is_null());
+        assert!(resp.results[1].is_success());
+        assert_eq!(resp.results[1].result["Name"], "NewName");
+    }
+
+    #[test]
+    fn parses_batch_response_with_subrequest_failure() {
+        // hasErrors=true and one of the results carries a Salesforce error
+        // array as its body. The transport call still returns 200 — only
+        // by inspecting the subresult does the caller learn it failed.
+        let body = json!({
+            "hasErrors": true,
+            "results": [
+                {"statusCode": 200, "result": {"Id": "001"}},
+                {"statusCode": 404, "result": [
+                    {"message": "Provided external ID field does not exist or is not accessible: bogus__c",
+                     "errorCode": "NOT_FOUND"}
+                ]}
+            ]
+        })
+        .to_string();
+        let resp: BatchResponse = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert!(resp.has_errors);
+        assert!(resp.results[0].is_success());
+        assert!(!resp.results[1].is_success());
+        assert_eq!(resp.results[1].status_code, 404);
+        assert_eq!(resp.results[1].result[0]["errorCode"], "NOT_FOUND");
+    }
+
+    #[test]
+    fn parses_batch_response_with_default_results_when_absent() {
+        // Defensive: schema always returns `results`, but our default keeps
+        // us from panicking if a future version omits it.
+        let body = r#"{"hasErrors": false}"#;
+        let resp: BatchResponse = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert!(resp.results.is_empty());
+    }
+
+    #[test]
+    fn parses_composite_tree_success_response() {
+        // From the documented success example.
+        let body = json!({
+            "hasErrors": false,
+            "results": [
+                {"referenceId": "ref1", "id": "001D000000K0fXOIAZ"},
+                {"referenceId": "ref4", "id": "001D000000K0fXPIAZ"},
+                {"referenceId": "ref2", "id": "003D000000QV9n2IAD"},
+                {"referenceId": "ref3", "id": "003D000000QV9n3IAD"}
+            ]
+        })
+        .to_string();
+        let resp: CompositeTreeResponse = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert!(!resp.has_errors);
+        assert_eq!(resp.results.len(), 4);
+        assert!(resp.results.iter().all(CompositeTreeResult::is_success));
+        assert_eq!(resp.results[0].reference_id, "ref1");
+        assert_eq!(resp.results[0].id.as_deref(), Some("001D000000K0fXOIAZ"));
+        assert!(resp.results[0].errors.is_none());
+    }
+
+    #[test]
+    fn parses_composite_tree_failure_response() {
+        // From the documented failure example: only the failing referenceId
+        // appears, with `errors` populated and `id` absent.
+        let body = json!({
+            "hasErrors": true,
+            "results": [{
+                "referenceId": "ref2",
+                "errors": [{
+                    "statusCode": "INVALID_EMAIL_ADDRESS",
+                    "message": "Email: invalid email address: 123",
+                    "fields": ["Email"]
+                }]
+            }]
+        })
+        .to_string();
+        let resp: CompositeTreeResponse = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert!(resp.has_errors);
+        assert_eq!(resp.results.len(), 1);
+        let result = &resp.results[0];
+        assert!(!result.is_success());
+        assert_eq!(result.reference_id, "ref2");
+        assert!(result.id.is_none());
+        let errors = result.errors.as_ref().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].status_code, "INVALID_EMAIL_ADDRESS");
+        assert_eq!(errors[0].fields, vec!["Email".to_string()]);
+    }
+
+    #[test]
+    fn parses_composite_tree_error_without_fields() {
+        // Some statusCodes (e.g. row-lock contention) carry no `fields` key.
+        // Default-empty Vec lets us deserialize either shape.
+        let body = json!({
+            "hasErrors": true,
+            "results": [{
+                "referenceId": "ref1",
+                "errors": [{
+                    "statusCode": "UNABLE_TO_LOCK_ROW",
+                    "message": "unable to obtain exclusive access"
+                }]
+            }]
+        })
+        .to_string();
+        let resp: CompositeTreeResponse = parse_response_bytes(200, body.as_bytes()).unwrap();
+        let errors = resp.results[0].errors.as_ref().unwrap();
+        assert!(errors[0].fields.is_empty());
     }
 
     #[test]

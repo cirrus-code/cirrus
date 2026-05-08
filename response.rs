@@ -247,7 +247,7 @@ pub struct CompositeTreeResult {
     /// Validation/save errors for this record. Populated only when this
     /// record's create failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub errors: Option<Vec<CompositeTreeError>>,
+    pub errors: Option<Vec<CompositeError>>,
 }
 
 impl CompositeTreeResult {
@@ -257,15 +257,16 @@ impl CompositeTreeResult {
     }
 }
 
-/// Per-record error entry inside [`CompositeTreeResult::errors`].
+/// Per-record error entry returned inside composite endpoint results
+/// ([`CompositeTreeResult::errors`], [`SObjectCollectionResult::errors`]).
 ///
 /// Salesforce uses a **different shape** here from the standard REST error
 /// array surfaced as [`crate::SalesforceError`]: the field is `statusCode`
-/// (a string enum like `"INVALID_EMAIL_ADDRESS"`, not an HTTP code) rather
-/// than `errorCode`. Don't try to deserialize this from the standard error
-/// array shape and vice versa.
+/// (a string enum like `"INVALID_EMAIL_ADDRESS"` or `"DUPLICATE_VALUE"`,
+/// not an HTTP code) rather than `errorCode`. Don't try to deserialize
+/// this from the standard error array shape and vice versa.
 #[derive(Debug, Clone, Deserialize)]
-pub struct CompositeTreeError {
+pub struct CompositeError {
     /// String enum identifying the error (e.g. `"INVALID_EMAIL_ADDRESS"`).
     #[serde(rename = "statusCode")]
     pub status_code: String,
@@ -274,6 +275,35 @@ pub struct CompositeTreeError {
     /// Field API names contributing to the error, when applicable.
     #[serde(default)]
     pub fields: Vec<String>,
+}
+
+/// One per-record entry in the array returned by `/composite/sobjects`
+/// (create / update / upsert / delete).
+///
+/// Unlike [`CompositeTreeResponse`], this endpoint does *not* roll back
+/// on partial failure when `allOrNone: false` (the default). Each record
+/// gets its own success/error result and a successful record's `id` is
+/// populated even when sibling records in the same call failed.
+///
+/// `created` is populated only by the upsert endpoint — `Some(true)`
+/// when an upsert inserted a new record, `Some(false)` when it updated
+/// an existing one. Absent on plain create/update/delete.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SObjectCollectionResult {
+    /// Salesforce ID of the affected record. `None` when this entry
+    /// represents a failure (no record was created/updated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// `true` when the per-record operation succeeded.
+    pub success: bool,
+    /// Errors for this record. Populated only when `success` is `false`;
+    /// uses the diverged composite error shape ([`CompositeError`]).
+    #[serde(default)]
+    pub errors: Vec<CompositeError>,
+    /// `true` if an upsert inserted a new record, `false` if it updated
+    /// an existing one. Always `None` for non-upsert calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<bool>,
 }
 
 /// Parses a Salesforce response body, branching on the HTTP status.

@@ -5,9 +5,9 @@
 
 * Status snapshot
 - Auth flows: 5/5 priority flows shipped (JWT, Refresh, Client Credentials, Web Server PKCE, Token Exchange).
-- API surface: 7/10 Phase 1 + composite/tree (Phase 2) shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=.
+- API surface: Phase 1 + composite/tree + composite/sobjects (Phase 2) shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=, =composite/sobjects= (create/update/upsert/delete/retrieve).
 - Open-ended client escape hatch shipped: =get= / =get_with_query= / =post= / =put= / =patch= / =delete= / =request_builder= / =execute= on =Cloudburst= with three-mode path resolution. Cross-cutting infrastructure unblocked.
-- Test count baseline: 138 unit + 2 doctest, all passing; clippy clean.
+- Test count baseline: 145 unit + 2 doctest, all passing; clippy clean.
 
 * Design principle: open-ended client (octocrab-style escape hatch)
 :PROPERTIES:
@@ -117,19 +117,24 @@ either typed JSON or =serde_json::Value=.
 - Per-subrequest failures are *not* translated into transport errors — Salesforce returns HTTP 200 for the outer call and the caller inspects =has_errors= + =BatchSubresult::is_success()=. Top-level batch deserialization errors (e.g. invalid sub-request URL) still surface as =CloudburstError::Api=.
 - Sub-request URLs do not flow through =resolve_url=; they are version-prefixed strings (=v60.0/sobjects/...=) per Salesforce's documented dispatch under =/services/data/=.
 
-* Phase 2 — Power-user surface [1/?]
+* Phase 2 — Power-user surface [2/?]
 :PROPERTIES:
 :GOAL: Cover the requests jsforce/simple-salesforce users reach for after CRUD.
 :END:
 ** DONE Composite tree =/composite/tree/{SObject}= (=handlers::composite::tree=)
 - =Cloudburst::composite().tree(sobject, body)= POSTs an arbitrary tree envelope and returns =CompositeTreeResponse= with =has_errors= + =Vec<CompositeTreeResult>=.
-- Distinct =CompositeTreeError= struct because Salesforce uses =statusCode= (string enum, e.g. =INVALID_EMAIL_ADDRESS=) here instead of the standard =errorCode= surfaced by =SalesforceError=.
+- Distinct =CompositeError= struct (renamed from =CompositeTreeError= when shared with =/composite/sobjects=) because Salesforce uses =statusCode= (string enum, e.g. =INVALID_EMAIL_ADDRESS=) here instead of the standard =errorCode= surfaced by =SalesforceError=.
 - *All-or-nothing semantics:* if =has_errors= is true, the entire tree was rolled back — =results= lists only the failing =referenceId=s, not all records. Documented on the response struct so callers don't iterate looking for partial successes.
 - Limits documented in handler: 200 records total, 5 distinct sObject types, 5 levels of nesting.
-** TODO Composite collections =/composite/sobjects= — bulk CRUD up to 200 records
+** DONE Composite collections =/composite/sobjects= (=handlers::composite::sobjects=)
+- =Cloudburst::composite().sobjects()= sub-handler with =create=, =update=, =upsert=, =delete=, =retrieve= / =retrieve_as=. All return =Vec<SObjectCollectionResult>= except retrieve which returns =Vec<Value>= / =Vec<R>=.
+- Default semantics are *partial-success* (=allOrNone: false=) — distinct from =/composite/tree=. Caller sets =allOrNone: true= in the body / query string for transactional behavior.
+- Per-record errors share =CompositeError= with =/composite/tree= (same diverged =statusCode= shape).
+- =retrieve= surfaces missing records as =Value::Null= entries aligned 1:1 with input =ids=. Typed =retrieve_as::<Option<R>>()= is the documented idiom for handling them.
+- =upsert= surfaces newly-inserted vs updated records via =SObjectCollectionResult::created= (=Some(true)= / =Some(false)=); always =None= for non-upsert calls.
+- *TODO consolidation:* the previously-listed "SObject collections — record-set CRUD wrappers" is *not* a separate endpoint. It's now a potential ergonomic-sugar layer over =composite().sobjects()= (e.g. =sf.sobjects().create_many(records)=) — deferred until usage data shows it's worth the parallel surface.
 ** TODO Generic composite =/composite= — chained requests with ref binding
 ** TODO Bulk API 2.0 (=/jobs/ingest=, =/jobs/query=) — async CSV ingest/query
-** TODO SObject collections — record-set CRUD wrappers
 ** TODO Apex REST passthrough — =/services/apexrest/{path}=
 ** TODO Tooling API — Apex, =SymbolTable=, anonymous execute
 ** TODO Event monitoring — =EventLogFile= retrieve + decode

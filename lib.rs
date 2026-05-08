@@ -52,9 +52,9 @@ pub use auth::{AuthSession, SharedAuth};
 pub use error::{CloudburstError, CloudburstResult, SalesforceError};
 pub use handlers::composite::{BatchRequest, BatchSubrequest};
 pub use response::{
-    ApiVersion, BatchResponse, BatchSubresult, CompositeTreeError, CompositeTreeResponse,
-    CompositeTreeResult, DescribeGlobal, Limit, OrgLimits, QueryResult, SObjectCreateResult,
-    SObjectMetadata, SearchResult,
+    ApiVersion, BatchResponse, BatchSubresult, CompositeError, CompositeTreeResponse,
+    CompositeTreeResult, DescribeGlobal, Limit, OrgLimits, QueryResult, SObjectCollectionResult,
+    SObjectCreateResult, SObjectMetadata, SearchResult,
 };
 
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};

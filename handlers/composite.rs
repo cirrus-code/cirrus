@@ -27,8 +27,10 @@
 
 use crate::Cloudburst;
 use crate::error::CloudburstResult;
-use crate::response::{BatchResponse, CompositeTreeResponse};
+use crate::response::{BatchResponse, CompositeTreeResponse, SObjectCollectionResult};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 
 impl Cloudburst {
     /// Returns a handler for the composite REST resources.
@@ -133,11 +135,7 @@ impl CompositeHandler<'_> {
     /// request rolls back and [`CompositeTreeResponse::has_errors`] is
     /// `true`. The `results` collection in that case lists only the
     /// failing records' `referenceId`s — *no* records were committed.
-    pub async fn tree<B>(
-        &self,
-        sobject: &str,
-        body: &B,
-    ) -> CloudburstResult<CompositeTreeResponse>
+    pub async fn tree<B>(&self, sobject: &str, body: &B) -> CloudburstResult<CompositeTreeResponse>
     where
         B: Serialize + ?Sized,
     {
@@ -146,6 +144,177 @@ impl CompositeHandler<'_> {
             .versioned_segments(&["composite", "tree", sobject])?;
         self.client
             .send_at(reqwest::Method::POST, &url, None::<&()>, Some(body))
+            .await
+    }
+
+    /// Returns a sub-handler for the sObject Collections endpoints
+    /// (`/composite/sobjects`).
+    ///
+    /// Five operations live under this resource — see
+    /// [`CompositeSObjectsHandler`] for create/retrieve/update/upsert/delete
+    /// against up to 200 (or 800 for retrieve) records per call.
+    pub fn sobjects(&self) -> CompositeSObjectsHandler<'_> {
+        CompositeSObjectsHandler {
+            client: self.client,
+        }
+    }
+}
+
+/// Handler for `/composite/sobjects` — the SObject Collections endpoints.
+///
+/// Available since API version 42.0. Each method below corresponds to one
+/// HTTP verb against the resource:
+///
+/// - [`create`](Self::create) — `POST` (up to 200 records)
+/// - [`update`](Self::update) — `PATCH` on the bare collection (up to 200)
+/// - [`upsert`](Self::upsert) — `PATCH` on `/{sobject}/{externalIdField}` (up to 200)
+/// - [`delete`](Self::delete) — `DELETE` with `?ids=...` (up to 200)
+/// - [`retrieve`](Self::retrieve) — `GET` on `/{sobject}` with `?ids=...&fields=...` (up to 800)
+///
+/// All methods return record-level results and never roll back across
+/// records on partial failure (when `allOrNone: false`, which is the
+/// default). Set `allOrNone` on the request body (or query string for
+/// delete) to enable transactional semantics.
+#[derive(Debug)]
+pub struct CompositeSObjectsHandler<'a> {
+    client: &'a Cloudburst,
+}
+
+impl CompositeSObjectsHandler<'_> {
+    /// Creates up to 200 records via `POST /composite/sobjects`.
+    ///
+    /// The body envelope is `{"allOrNone": false, "records": [...]}`,
+    /// where each record carries an `attributes.type` identifying its
+    /// sObject. Records may target different sObject types in the same
+    /// call.
+    ///
+    /// ```ignore
+    /// use serde_json::json;
+    ///
+    /// let body = json!({
+    ///     "allOrNone": false,
+    ///     "records": [
+    ///         {"attributes": {"type": "Account"}, "Name": "Acme"},
+    ///         {"attributes": {"type": "Contact"}, "LastName": "Doe"}
+    ///     ]
+    /// });
+    /// let results = sf.composite().sobjects().create(&body).await?;
+    /// for r in &results {
+    ///     if r.success {
+    ///         println!("{:?}", r.id);
+    ///     }
+    /// }
+    /// ```
+    pub async fn create<B>(&self, body: &B) -> CloudburstResult<Vec<SObjectCollectionResult>>
+    where
+        B: Serialize + ?Sized,
+    {
+        self.client.post("composite/sobjects", body).await
+    }
+
+    /// Updates up to 200 records via `PATCH /composite/sobjects`.
+    ///
+    /// Each record in the body must include its `id` alongside the
+    /// `attributes.type` and the fields to update. Same envelope as
+    /// [`create`](Self::create).
+    pub async fn update<B>(&self, body: &B) -> CloudburstResult<Vec<SObjectCollectionResult>>
+    where
+        B: Serialize + ?Sized,
+    {
+        self.client.patch("composite/sobjects", body).await
+    }
+
+    /// Upserts up to 200 records by external ID via
+    /// `PATCH /composite/sobjects/{sobject}/{externalIdField}`.
+    ///
+    /// Each record must carry the external ID field's value as a top-level
+    /// property. [`SObjectCollectionResult::created`] indicates whether
+    /// each record was newly inserted (`Some(true)`) or matched an
+    /// existing record (`Some(false)`).
+    pub async fn upsert<B>(
+        &self,
+        sobject: &str,
+        external_id_field: &str,
+        body: &B,
+    ) -> CloudburstResult<Vec<SObjectCollectionResult>>
+    where
+        B: Serialize + ?Sized,
+    {
+        let url = self.client.versioned_segments(&[
+            "composite",
+            "sobjects",
+            sobject,
+            external_id_field,
+        ])?;
+        self.client
+            .send_at(reqwest::Method::PATCH, &url, None::<&()>, Some(body))
+            .await
+    }
+
+    /// Deletes up to 200 records by ID via
+    /// `DELETE /composite/sobjects?ids=...&allOrNone=...`.
+    ///
+    /// `ids` is comma-joined into a single query parameter. `all_or_none`
+    /// makes the operation transactional: when `true`, any single
+    /// failure rolls back the whole batch.
+    pub async fn delete(
+        &self,
+        ids: &[&str],
+        all_or_none: bool,
+    ) -> CloudburstResult<Vec<SObjectCollectionResult>> {
+        let joined = ids.join(",");
+        let all = if all_or_none { "true" } else { "false" };
+        let url = self.client.resolve_url("composite/sobjects");
+        self.client
+            .send_at::<_, _, ()>(
+                reqwest::Method::DELETE,
+                &url,
+                Some(&[("ids", joined.as_str()), ("allOrNone", all)]),
+                None,
+            )
+            .await
+    }
+
+    /// Retrieves up to 800 records of a single sObject type via
+    /// `GET /composite/sobjects/{sobject}?ids=...&fields=...`.
+    ///
+    /// Records that don't exist (or aren't visible to the caller) appear
+    /// as `Value::Null` in the corresponding position of the returned
+    /// slice — preserving 1:1 alignment with the input `ids`.
+    pub async fn retrieve(
+        &self,
+        sobject: &str,
+        ids: &[&str],
+        fields: &[&str],
+    ) -> CloudburstResult<Vec<Value>> {
+        self.retrieve_as(sobject, ids, fields).await
+    }
+
+    /// Typed variant of [`retrieve`](Self::retrieve). Records that don't
+    /// exist will fail to deserialize as `R` from `null` unless `R` itself
+    /// is `Option<T>` — use `Vec<Option<T>>` if missing records are
+    /// possible.
+    pub async fn retrieve_as<R: DeserializeOwned>(
+        &self,
+        sobject: &str,
+        ids: &[&str],
+        fields: &[&str],
+    ) -> CloudburstResult<Vec<R>> {
+        let url = self
+            .client
+            .versioned_segments(&["composite", "sobjects", sobject])?;
+        let joined_ids = ids.join(",");
+        let joined_fields = fields.join(",");
+        self.client
+            .send_at::<_, _, ()>(
+                reqwest::Method::GET,
+                &url,
+                Some(&[
+                    ("ids", joined_ids.as_str()),
+                    ("fields", joined_fields.as_str()),
+                ]),
+                None,
+            )
             .await
     }
 }
@@ -404,7 +573,10 @@ mod tests {
         assert!(resp.results[0].is_success());
         assert!(!resp.results[1].is_success());
         assert_eq!(resp.results[1].status_code, 400);
-        assert_eq!(resp.results[1].result[0]["errorCode"], "REQUIRED_FIELD_MISSING");
+        assert_eq!(
+            resp.results[1].result[0]["errorCode"],
+            "REQUIRED_FIELD_MISSING"
+        );
     }
 
     #[tokio::test]
@@ -443,11 +615,7 @@ mod tests {
             .await;
 
         let sf = fixture(server.uri());
-        let resp = sf
-            .composite()
-            .tree("Account", &request_body)
-            .await
-            .unwrap();
+        let resp = sf.composite().tree("Account", &request_body).await.unwrap();
         assert!(!resp.has_errors);
         assert_eq!(resp.results.len(), 3);
         assert_eq!(resp.results[0].reference_id, "ref1");
@@ -578,5 +746,251 @@ mod tests {
             }
             other => panic!("expected Api error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn sobjects_create_returns_per_record_results() {
+        let server = MockServer::start().await;
+
+        let request_body = json!({
+            "allOrNone": false,
+            "records": [
+                {"attributes": {"type": "Account"}, "Name": "Acme"},
+                {"attributes": {"type": "Contact"}, "LastName": "Doe"}
+            ]
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/services/data/v60.0/composite/sobjects"))
+            .and(header("authorization", "Bearer tok"))
+            .and(body_json(request_body.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"id": "001xx0000000001", "success": true, "errors": []},
+                {"id": "003yy0000000001", "success": true, "errors": []}
+            ])))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let results = sf
+            .composite()
+            .sobjects()
+            .create(&request_body)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.success));
+        assert_eq!(results[0].id.as_deref(), Some("001xx0000000001"));
+        assert_eq!(results[1].id.as_deref(), Some("003yy0000000001"));
+        assert!(results[0].created.is_none());
+    }
+
+    #[tokio::test]
+    async fn sobjects_update_uses_patch_verb() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PATCH"))
+            .and(path("/services/data/v60.0/composite/sobjects"))
+            .and(body_json(json!({
+                "allOrNone": true,
+                "records": [
+                    {"attributes": {"type": "Account"}, "id": "001xx", "Name": "Renamed"}
+                ]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"id": "001xx", "success": true, "errors": []}
+            ])))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let results = sf
+            .composite()
+            .sobjects()
+            .update(&json!({
+                "allOrNone": true,
+                "records": [
+                    {"attributes": {"type": "Account"}, "id": "001xx", "Name": "Renamed"}
+                ]
+            }))
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].success);
+    }
+
+    #[tokio::test]
+    async fn sobjects_upsert_targets_external_id_path_and_returns_created_flag() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PATCH"))
+            .and(path(
+                "/services/data/v60.0/composite/sobjects/Account/External_Id__c",
+            ))
+            .and(body_json(json!({
+                "allOrNone": false,
+                "records": [
+                    {"attributes": {"type": "Account"},
+                     "External_Id__c": "EXT-1",
+                     "Name": "Acme"},
+                    {"attributes": {"type": "Account"},
+                     "External_Id__c": "EXT-2",
+                     "Name": "Existing"}
+                ]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"id": "001aa", "success": true, "errors": [], "created": true},
+                {"id": "001bb", "success": true, "errors": [], "created": false}
+            ])))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let results = sf
+            .composite()
+            .sobjects()
+            .upsert(
+                "Account",
+                "External_Id__c",
+                &json!({
+                    "allOrNone": false,
+                    "records": [
+                        {"attributes": {"type": "Account"},
+                         "External_Id__c": "EXT-1",
+                         "Name": "Acme"},
+                        {"attributes": {"type": "Account"},
+                         "External_Id__c": "EXT-2",
+                         "Name": "Existing"}
+                    ]
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(results[0].created, Some(true));
+        assert_eq!(results[1].created, Some(false));
+    }
+
+    #[tokio::test]
+    async fn sobjects_delete_passes_ids_and_all_or_none_query_params() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/services/data/v60.0/composite/sobjects"))
+            .and(wiremock::matchers::query_param("ids", "001xx,001yy"))
+            .and(wiremock::matchers::query_param("allOrNone", "false"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"id": "001xx", "success": true, "errors": []},
+                {"id": "001yy", "success": true, "errors": []}
+            ])))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let results = sf
+            .composite()
+            .sobjects()
+            .delete(&["001xx", "001yy"], false)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.success));
+    }
+
+    #[tokio::test]
+    async fn sobjects_retrieve_returns_record_array_aligned_with_ids() {
+        let server = MockServer::start().await;
+
+        // Salesforce surfaces missing records as `null` at the corresponding
+        // index — preserving 1:1 alignment with the input ids.
+        Mock::given(method("GET"))
+            .and(path("/services/data/v60.0/composite/sobjects/Account"))
+            .and(wiremock::matchers::query_param(
+                "ids",
+                "001xx,missing,001yy",
+            ))
+            .and(wiremock::matchers::query_param("fields", "Id,Name"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"attributes": {"type": "Account"}, "Id": "001xx", "Name": "Acme"},
+                null,
+                {"attributes": {"type": "Account"}, "Id": "001yy", "Name": "Other"}
+            ])))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let records = sf
+            .composite()
+            .sobjects()
+            .retrieve("Account", &["001xx", "missing", "001yy"], &["Id", "Name"])
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0]["Name"], "Acme");
+        assert!(records[1].is_null());
+        assert_eq!(records[2]["Name"], "Other");
+    }
+
+    #[tokio::test]
+    async fn sobjects_retrieve_typed_into_optional_records() {
+        // Demonstrates the documented Vec<Option<T>> idiom for handling
+        // null entries when missing records are possible.
+        #[derive(serde::Deserialize)]
+        struct Acct {
+            #[serde(rename = "Id")]
+            id: String,
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/services/data/v60.0/composite/sobjects/Account"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"attributes": {"type": "Account"}, "Id": "001xx"},
+                null
+            ])))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let records: Vec<Option<Acct>> = sf
+            .composite()
+            .sobjects()
+            .retrieve_as("Account", &["001xx", "missing"], &["Id"])
+            .await
+            .unwrap();
+        assert_eq!(records[0].as_ref().unwrap().id, "001xx");
+        assert!(records[1].is_none());
+    }
+
+    #[tokio::test]
+    async fn sobjects_create_surfaces_per_record_failures_with_diverged_error_shape() {
+        // The endpoint returns 200 with per-record success: false entries
+        // carrying the {statusCode, message, fields} CompositeError shape.
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/services/data/v60.0/composite/sobjects"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"id": "001xx", "success": true, "errors": []},
+                {"success": false, "errors": [{
+                    "statusCode": "DUPLICATE_VALUE",
+                    "message": "duplicate value found: External_Id__c duplicates value on record with id: 001aa",
+                    "fields": []
+                }]}
+            ])))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let results = sf
+            .composite()
+            .sobjects()
+            .create(&json!({"allOrNone": false, "records": []}))
+            .await
+            .unwrap();
+        assert!(results[0].success);
+        assert!(!results[1].success);
+        assert!(results[1].id.is_none());
+        assert_eq!(results[1].errors[0].status_code, "DUPLICATE_VALUE");
+        assert!(results[1].errors[0].fields.is_empty());
     }
 }

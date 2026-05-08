@@ -18,6 +18,7 @@ base64 = "0.22"
 camino = "1.2"
 fs-err = "3.3"
 getrandom = "0.4"
+http-serde = "2.1.1"
 jsonwebtoken = { version = "10.3", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 reqwest = { version = "0.13", default-features = false, features = ["form", "json", "query", "rustls", "charset", "system-proxy"] }
 serde = { version = "1.0", features = ["derive"] }

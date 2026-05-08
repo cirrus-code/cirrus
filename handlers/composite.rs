@@ -27,7 +27,10 @@
 
 use crate::Cloudburst;
 use crate::error::CloudburstResult;
-use crate::response::{BatchResponse, CompositeTreeResponse, SObjectCollectionResult};
+use crate::response::{
+    BatchResponse, CompositeResponse, CompositeTreeResponse, SObjectCollectionResult,
+};
+use reqwest::header::HeaderMap;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -158,6 +161,127 @@ impl CompositeHandler<'_> {
             client: self.client,
         }
     }
+
+    /// Executes a chained series of REST sub-requests in a single call via
+    /// `POST /services/data/{api_version}/composite`.
+    ///
+    /// Up to 25 sub-requests, with reference binding (`@{ref.field}`) so a
+    /// later sub-request can consume an earlier one's output. The body is
+    /// any [`Serialize`] value matching the documented envelope —
+    /// typically a [`CompositeRequest`] from this crate.
+    ///
+    /// **Sub-request URL shape differs from [`batch`](Self::batch).** Generic
+    /// composite sub-requests use full-prefix URLs starting with
+    /// `/services/data/vXX.X/`, *not* the bare `vXX.X/...` form that batch
+    /// uses. Wires-crossed gives a 400 from Salesforce.
+    ///
+    /// **Reference binding** is a server-side template Salesforce evaluates
+    /// before each sub-request runs. Field names are case-sensitive: a
+    /// create's response uses `id` (lowercase) but a record retrieve uses
+    /// `Id` — `@{ref.id}` and `@{ref.Id}` reach different fields.
+    ///
+    /// ```ignore
+    /// use cloudburst_sdk::{CompositeRequest, CompositeSubrequest};
+    /// use serde_json::json;
+    ///
+    /// let req = CompositeRequest {
+    ///     all_or_none: Some(true),
+    ///     collate_subrequests: None, // server default (true since v49.0)
+    ///     composite_request: vec![
+    ///         CompositeSubrequest {
+    ///             method: "POST".into(),
+    ///             url: "/services/data/v60.0/sobjects/Account".into(),
+    ///             reference_id: "NewAccount".into(),
+    ///             body: Some(json!({"Name": "Acme"})),
+    ///             http_headers: None,
+    ///         },
+    ///         CompositeSubrequest {
+    ///             method: "POST".into(),
+    ///             url: "/services/data/v60.0/sobjects/Contact".into(),
+    ///             reference_id: "NewContact".into(),
+    ///             body: Some(json!({
+    ///                 "AccountId": "@{NewAccount.id}",
+    ///                 "LastName": "Doe"
+    ///             })),
+    ///             http_headers: None,
+    ///         },
+    ///     ],
+    /// };
+    /// let resp = sf.composite().execute(&req).await?;
+    /// for sub in &resp.composite_response {
+    ///     println!("{} -> {}", sub.reference_id, sub.http_status_code);
+    /// }
+    /// ```
+    ///
+    /// Note: `Cloudburst::execute` (the open-ended escape hatch) and
+    /// `CompositeHandler::execute` (this method) are unrelated despite
+    /// sharing a name — distinguished by their receivers and signatures.
+    pub async fn execute<B>(&self, body: &B) -> CloudburstResult<CompositeResponse>
+    where
+        B: Serialize + ?Sized,
+    {
+        self.client.post("composite", body).await
+    }
+}
+
+/// Request body for [`CompositeHandler::execute`].
+///
+/// Equivalent to a `serde_json::json!({...})` literal of the documented
+/// envelope; both flow through [`CompositeHandler::execute`]'s generic
+/// `Serialize` bound.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CompositeRequest {
+    /// Sub-requests to execute (max 25, of which up to 5 may be sObject
+    /// Collections or query/queryAll calls).
+    #[serde(rename = "compositeRequest")]
+    pub composite_request: Vec<CompositeSubrequest>,
+    /// When `Some(true)`, any sub-request failure rolls back the whole
+    /// composite request transactionally. Defaults to `false` server-side
+    /// when omitted.
+    #[serde(rename = "allOrNone", skip_serializing_if = "Option::is_none")]
+    pub all_or_none: Option<bool>,
+    /// Whether the API may collate compatible sub-requests into bulkified
+    /// operations. Server default: `true` since API v49.0, `false` on
+    /// v48.0. We omit the field when `None` so callers see the server
+    /// default for their configured `api_version`.
+    #[serde(rename = "collateSubrequests", skip_serializing_if = "Option::is_none")]
+    pub collate_subrequests: Option<bool>,
+}
+
+/// One entry in [`CompositeRequest::composite_request`].
+///
+/// `url` *must* start with `/services/data/vXX.X/` — generic composite
+/// requires the full path prefix that [`BatchSubrequest::url`] (without
+/// the `/services/data/` prefix) does *not*. Don't confuse the two.
+///
+/// `reference_id` is required and must start with a letter/digit and
+/// contain only letters/digits/underscores. Other sub-requests in the
+/// same composite can reference this entry via `@{reference_id.field}`.
+#[derive(Debug, Clone, Serialize)]
+pub struct CompositeSubrequest {
+    /// HTTP method, e.g. `"POST"`, `"PATCH"`, `"GET"`, `"DELETE"`.
+    pub method: String,
+    /// Resource URL — must start with `/services/data/vXX.X/`.
+    pub url: String,
+    /// Reference ID used both to correlate the matching subresponse and
+    /// for `@{...}` binding from later sub-requests.
+    #[serde(rename = "referenceId")]
+    pub reference_id: String,
+    /// Request body for the sub-request. `None` for verbs that don't
+    /// carry a body (GET, DELETE).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<Value>,
+    /// Per-sub-request HTTP headers. Salesforce rejects `Accept`,
+    /// `Authorization`, and `Content-Type` here — they're inherited from
+    /// the top-level request. Also: setting any header opts a sub-request
+    /// out of collation.
+    #[serde(
+        rename = "httpHeaders",
+        with = "http_serde::option::header_map",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub http_headers: Option<HeaderMap>,
 }
 
 /// Handler for `/composite/sobjects` — the SObject Collections endpoints.
@@ -743,6 +867,216 @@ mod tests {
             crate::CloudburstError::Api { status, errors, .. } => {
                 assert_eq!(status, 400);
                 assert_eq!(errors[0].error_code, "JSON_PARSER_ERROR");
+            }
+            other => panic!("expected Api error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn composite_executes_chained_subrequests_and_returns_subresponses() {
+        let server = MockServer::start().await;
+
+        let request_body = json!({
+            "compositeRequest": [
+                {
+                    "method": "POST",
+                    "url": "/services/data/v60.0/sobjects/Account",
+                    "referenceId": "NewAccount",
+                    "body": {"Name": "Acme"}
+                },
+                {
+                    "method": "POST",
+                    "url": "/services/data/v60.0/sobjects/Contact",
+                    "referenceId": "NewContact",
+                    "body": {"AccountId": "@{NewAccount.id}", "LastName": "Doe"}
+                }
+            ]
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/services/data/v60.0/composite"))
+            .and(header("authorization", "Bearer tok"))
+            .and(body_json(request_body.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "compositeResponse": [
+                    {
+                        "body": {"id": "001xx", "success": true, "errors": []},
+                        "httpHeaders": {"Location": "/services/data/v60.0/sobjects/Account/001xx"},
+                        "httpStatusCode": 201,
+                        "referenceId": "NewAccount"
+                    },
+                    {
+                        "body": {"id": "003yy", "success": true, "errors": []},
+                        "httpHeaders": {"Location": "/services/data/v60.0/sobjects/Contact/003yy"},
+                        "httpStatusCode": 201,
+                        "referenceId": "NewContact"
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let resp = sf.composite().execute(&request_body).await.unwrap();
+        assert_eq!(resp.composite_response.len(), 2);
+        assert!(resp.composite_response.iter().all(|s| s.is_success()));
+        assert_eq!(resp.composite_response[0].reference_id, "NewAccount");
+        assert_eq!(resp.composite_response[0].body["id"], "001xx");
+        assert_eq!(
+            resp.composite_response[0]
+                .http_headers
+                .get("Location")
+                .and_then(|v| v.to_str().ok()),
+            Some("/services/data/v60.0/sobjects/Account/001xx")
+        );
+    }
+
+    #[tokio::test]
+    async fn composite_typed_request_serializes_documented_shape() {
+        // Construct via the typed CompositeRequest/CompositeSubrequest
+        // structs and assert the wire body matches the documented example.
+        let server = MockServer::start().await;
+
+        let expected_body = json!({
+            "compositeRequest": [{
+                "method": "POST",
+                "url": "/services/data/v60.0/sobjects/Account",
+                "referenceId": "refAccount",
+                "body": {"Name": "Sample Account"}
+            }],
+            "allOrNone": true
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/services/data/v60.0/composite"))
+            .and(body_json(expected_body))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "compositeResponse": []
+            })))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let req = CompositeRequest {
+            composite_request: vec![CompositeSubrequest {
+                method: "POST".into(),
+                url: "/services/data/v60.0/sobjects/Account".into(),
+                reference_id: "refAccount".into(),
+                body: Some(json!({"Name": "Sample Account"})),
+                http_headers: None,
+            }],
+            all_or_none: Some(true),
+            collate_subrequests: None,
+        };
+        sf.composite().execute(&req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn composite_typed_request_omits_optional_flags_when_none() {
+        // None must serialize to absence — not null. Body match would fail
+        // if either allOrNone or collateSubrequests appeared.
+        let server = MockServer::start().await;
+
+        let expected_body = json!({
+            "compositeRequest": [{
+                "method": "GET",
+                "url": "/services/data/v60.0/limits",
+                "referenceId": "L"
+            }]
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/services/data/v60.0/composite"))
+            .and(body_json(expected_body))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "compositeResponse": []
+            })))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let req = CompositeRequest {
+            composite_request: vec![CompositeSubrequest {
+                method: "GET".into(),
+                url: "/services/data/v60.0/limits".into(),
+                reference_id: "L".into(),
+                body: None,
+                http_headers: None,
+            }],
+            all_or_none: None,
+            collate_subrequests: None,
+        };
+        sf.composite().execute(&req).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn composite_subrequest_failure_surfaces_via_http_status_code() {
+        // Sub-request failure: outer call returns 200, but a subresponse
+        // carries httpStatusCode: 404 + an error array body. is_success
+        // distinguishes per-subrequest outcomes.
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/services/data/v60.0/composite"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "compositeResponse": [
+                    {
+                        "body": {"id": "001xx", "success": true, "errors": []},
+                        "httpHeaders": {},
+                        "httpStatusCode": 201,
+                        "referenceId": "OK"
+                    },
+                    {
+                        "body": [{
+                            "message": "The requested resource does not exist",
+                            "errorCode": "NOT_FOUND"
+                        }],
+                        "httpHeaders": {},
+                        "httpStatusCode": 404,
+                        "referenceId": "Missing"
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let resp = sf
+            .composite()
+            .execute(&json!({"compositeRequest": []}))
+            .await
+            .unwrap();
+        assert!(resp.composite_response[0].is_success());
+        assert!(!resp.composite_response[1].is_success());
+        assert_eq!(resp.composite_response[1].body[0]["errorCode"], "NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn composite_top_level_400_surfaces_as_api_error() {
+        // Malformed top-level body (e.g. duplicate referenceId) — the
+        // composite endpoint itself returns 400, parsed as our standard
+        // Api error.
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/services/data/v60.0/composite"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!([{
+                "message": "Duplicate referenceId: ref1",
+                "errorCode": "INVALID_INPUT"
+            }])))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let err = sf
+            .composite()
+            .execute(&json!({"compositeRequest": []}))
+            .await
+            .unwrap_err();
+        match err {
+            crate::CloudburstError::Api { status, errors, .. } => {
+                assert_eq!(status, 400);
+                assert_eq!(errors[0].error_code, "INVALID_INPUT");
             }
             other => panic!("expected Api error, got {other:?}"),
         }

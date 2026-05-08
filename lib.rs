@@ -50,11 +50,12 @@ mod response;
 
 pub use auth::{AuthSession, SharedAuth};
 pub use error::{CloudburstError, CloudburstResult, SalesforceError};
-pub use handlers::composite::{BatchRequest, BatchSubrequest};
+pub use handlers::composite::{BatchRequest, BatchSubrequest, CompositeRequest, CompositeSubrequest};
 pub use response::{
-    ApiVersion, BatchResponse, BatchSubresult, CompositeError, CompositeTreeResponse,
-    CompositeTreeResult, DescribeGlobal, Limit, OrgLimits, QueryResult, SObjectCollectionResult,
-    SObjectCreateResult, SObjectMetadata, SearchResult,
+    ApiVersion, BatchResponse, BatchSubresult, CompositeError, CompositeResponse,
+    CompositeSubresponse, CompositeTreeResponse, CompositeTreeResult, DescribeGlobal, Limit,
+    OrgLimits, QueryResult, SObjectCollectionResult, SObjectCreateResult, SObjectMetadata,
+    SearchResult,
 };
 
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};

@@ -5,9 +5,9 @@
 
 * Status snapshot
 - Auth flows: 5/5 priority flows shipped (JWT, Refresh, Client Credentials, Web Server PKCE, Token Exchange).
-- API surface: Phase 1 + composite/tree + composite/sobjects (Phase 2) shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=, =composite/sobjects= (create/update/upsert/delete/retrieve).
+- API surface: Phase 1 + entire composite family shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=, =composite/sobjects= (create/update/upsert/delete/retrieve), =composite= (chained sub-requests with =@{ref.field}= binding).
 - Open-ended client escape hatch shipped: =get= / =get_with_query= / =post= / =put= / =patch= / =delete= / =request_builder= / =execute= on =Cloudburst= with three-mode path resolution. Cross-cutting infrastructure unblocked.
-- Test count baseline: 145 unit + 2 doctest, all passing; clippy clean.
+- Test count baseline: 153 unit + 2 doctest, all passing; clippy clean.
 
 * Design principle: open-ended client (octocrab-style escape hatch)
 :PROPERTIES:
@@ -117,7 +117,7 @@ either typed JSON or =serde_json::Value=.
 - Per-subrequest failures are *not* translated into transport errors — Salesforce returns HTTP 200 for the outer call and the caller inspects =has_errors= + =BatchSubresult::is_success()=. Top-level batch deserialization errors (e.g. invalid sub-request URL) still surface as =CloudburstError::Api=.
 - Sub-request URLs do not flow through =resolve_url=; they are version-prefixed strings (=v60.0/sobjects/...=) per Salesforce's documented dispatch under =/services/data/=.
 
-* Phase 2 — Power-user surface [2/?]
+* Phase 2 — Power-user surface [3/?]
 :PROPERTIES:
 :GOAL: Cover the requests jsforce/simple-salesforce users reach for after CRUD.
 :END:
@@ -133,7 +133,12 @@ either typed JSON or =serde_json::Value=.
 - =retrieve= surfaces missing records as =Value::Null= entries aligned 1:1 with input =ids=. Typed =retrieve_as::<Option<R>>()= is the documented idiom for handling them.
 - =upsert= surfaces newly-inserted vs updated records via =SObjectCollectionResult::created= (=Some(true)= / =Some(false)=); always =None= for non-upsert calls.
 - *TODO consolidation:* the previously-listed "SObject collections — record-set CRUD wrappers" is *not* a separate endpoint. It's now a potential ergonomic-sugar layer over =composite().sobjects()= (e.g. =sf.sobjects().create_many(records)=) — deferred until usage data shows it's worth the parallel surface.
-** TODO Generic composite =/composite= — chained requests with ref binding
+** DONE Generic composite =/composite= (=handlers::composite::execute=)
+- =Cloudburst::composite().execute(body)= POSTs the chained envelope and returns =CompositeResponse= with =Vec<CompositeSubresponse>= (each carrying =body=, =http_headers=, =http_status_code=, =reference_id=).
+- Typed =CompositeRequest= / =CompositeSubrequest= request structs in =handlers::composite= alongside =serde_json::json!({...})= bodies via the generic =Serialize= bound.
+- *Sub-request URL shape diverges from =/composite/batch=:* generic composite requires =/services/data/vXX.X/...= (full prefix), batch requires =vXX.X/...= (no prefix). Documented prominently on =execute= because crossing them gives a 400 from Salesforce.
+- Reference binding (=@{ref.field}=) is a server-side template; SDK ferries it through unchanged. Field-name case-sensitivity (=@{ref.id}= vs =@{ref.Id}= reach different fields) is the caller's responsibility.
+- =collateSubrequests= defaults to =true= since v49.0 (server-side default change). =CompositeRequest::collate_subrequests: None= preserves whichever default the configured =api_version= would use.
 ** TODO Bulk API 2.0 (=/jobs/ingest=, =/jobs/query=) — async CSV ingest/query
 ** TODO Apex REST passthrough — =/services/apexrest/{path}=
 ** TODO Tooling API — Apex, =SymbolTable=, anonymous execute

@@ -15,6 +15,7 @@
 //! types.
 
 use crate::error::{CloudburstError, CloudburstResult, SalesforceError};
+use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
@@ -275,6 +276,63 @@ pub struct CompositeError {
     /// Field API names contributing to the error, when applicable.
     #[serde(default)]
     pub fields: Vec<String>,
+}
+
+/// Top-level response from `POST /composite`.
+///
+/// Generic composite returns `compositeResponse` — a vector of per-subrequest
+/// results in submission order (or an order determined by `collateSubrequests`
+/// when collation is enabled). Each entry is a [`CompositeSubresponse`]
+/// carrying that subrequest's HTTP status, headers, body, and the caller's
+/// `referenceId` for matching.
+///
+/// Unlike [`BatchResponse`] / [`CompositeTreeResponse`], there is *no*
+/// top-level `hasErrors` flag — callers iterate
+/// [`composite_response`](Self::composite_response) and check each
+/// subresponse's [`http_status_code`](CompositeSubresponse::http_status_code)
+/// (or use [`CompositeSubresponse::is_success`]). The transactional
+/// rollback flag is on the *request* side (`allOrNone`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompositeResponse {
+    /// One entry per sub-request, ordered by submission unless
+    /// `collateSubrequests` reordered them server-side.
+    #[serde(rename = "compositeResponse", default = "Vec::new")]
+    pub composite_response: Vec<CompositeSubresponse>,
+}
+
+/// One sub-request entry inside [`CompositeResponse::composite_response`].
+///
+/// Carries the caller's `referenceId` echoed back, the HTTP status and
+/// headers the sub-request returned, and its body (record / error array /
+/// `null`). The `http_headers` field is the place to look for `Location`
+/// after a create or `Sforce-Limit-Info` for rate-limit tracking.
+///
+/// Headers are surfaced as a [`HeaderMap`] so lookups are case-insensitive
+/// — `headers.get("location")` and `headers.get("Location")` reach the
+/// same value, regardless of how Salesforce cased it on the wire.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompositeSubresponse {
+    /// Sub-request response body — record on success, error array on
+    /// failure, `Value::Null` for 204 No Content.
+    #[serde(default)]
+    pub body: serde_json::Value,
+    /// HTTP headers returned by the sub-request.
+    #[serde(rename = "httpHeaders", default, with = "http_serde::header_map")]
+    pub http_headers: HeaderMap,
+    /// HTTP status code of the sub-request.
+    #[serde(rename = "httpStatusCode")]
+    pub http_status_code: u16,
+    /// Caller-supplied `referenceId` from the matching request entry.
+    /// Use this to correlate when `collateSubrequests` reorders results.
+    #[serde(rename = "referenceId")]
+    pub reference_id: String,
+}
+
+impl CompositeSubresponse {
+    /// `true` if this sub-request succeeded (`http_status_code` in 200..300).
+    pub fn is_success(&self) -> bool {
+        (200..300).contains(&self.http_status_code)
+    }
 }
 
 /// One per-record entry in the array returned by `/composite/sobjects`
@@ -665,6 +723,108 @@ mod tests {
         let body = r#"{"hasErrors": false}"#;
         let resp: BatchResponse = parse_response_bytes(200, body.as_bytes()).unwrap();
         assert!(resp.results.is_empty());
+    }
+
+    #[test]
+    fn parses_composite_response_with_per_subrequest_results() {
+        // Documented chain: POST account, then GET it back, then PATCH a
+        // related record using @{ref.id} binding. Each subresponse echoes
+        // its referenceId and carries headers/status from the inner call.
+        let body = json!({
+            "compositeResponse": [
+                {
+                    "body": {"id": "001RM000003oCprYAE", "success": true, "errors": []},
+                    "httpHeaders": {"Location": "/services/data/v60.0/sobjects/Account/001RM000003oCprYAE"},
+                    "httpStatusCode": 201,
+                    "referenceId": "NewAccount"
+                },
+                {
+                    "body": {"attributes": {"type": "Account"}, "Id": "001RM000003oCprYAE", "Name": "Acme"},
+                    "httpHeaders": {},
+                    "httpStatusCode": 200,
+                    "referenceId": "AccountInfo"
+                },
+                {
+                    "body": null,
+                    "httpHeaders": {},
+                    "httpStatusCode": 204,
+                    "referenceId": "ContactPatch"
+                }
+            ]
+        })
+        .to_string();
+        let resp: CompositeResponse = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert_eq!(resp.composite_response.len(), 3);
+        assert!(resp.composite_response.iter().all(|r| r.is_success()));
+        assert_eq!(resp.composite_response[0].reference_id, "NewAccount");
+        assert_eq!(
+            resp.composite_response[0]
+                .http_headers
+                .get("Location")
+                .and_then(|v| v.to_str().ok()),
+            Some("/services/data/v60.0/sobjects/Account/001RM000003oCprYAE")
+        );
+        assert_eq!(resp.composite_response[1].body["Name"], "Acme");
+        assert!(resp.composite_response[2].body.is_null());
+    }
+
+    #[test]
+    fn composite_subresponse_header_lookup_is_case_insensitive() {
+        // The wire shape uses "Location" (mixed case). HeaderMap's
+        // case-insensitive lookup means callers don't have to match
+        // Salesforce's casing exactly.
+        let body = json!({
+            "compositeResponse": [{
+                "body": {"id": "001xx", "success": true, "errors": []},
+                "httpHeaders": {"Location": "/services/data/v60.0/sobjects/Account/001xx"},
+                "httpStatusCode": 201,
+                "referenceId": "x"
+            }]
+        })
+        .to_string();
+        let resp: CompositeResponse = parse_response_bytes(200, body.as_bytes()).unwrap();
+        let headers = &resp.composite_response[0].http_headers;
+        // All three casings reach the same header value.
+        assert!(headers.get("Location").is_some());
+        assert!(headers.get("location").is_some());
+        assert!(headers.get("LOCATION").is_some());
+        assert_eq!(
+            headers.get("location").and_then(|v| v.to_str().ok()),
+            Some("/services/data/v60.0/sobjects/Account/001xx")
+        );
+    }
+
+    #[test]
+    fn parses_composite_subresponse_failure_body() {
+        // Sub-request failure surfaces via httpStatusCode + an error array
+        // body — same as composite/batch's per-subrequest failure path.
+        let body = json!({
+            "compositeResponse": [{
+                "body": [{
+                    "message": "The requested resource does not exist",
+                    "errorCode": "NOT_FOUND"
+                }],
+                "httpHeaders": {},
+                "httpStatusCode": 404,
+                "referenceId": "Lookup"
+            }]
+        })
+        .to_string();
+        let resp: CompositeResponse = parse_response_bytes(200, body.as_bytes()).unwrap();
+        let sub = &resp.composite_response[0];
+        assert!(!sub.is_success());
+        assert_eq!(sub.http_status_code, 404);
+        assert_eq!(sub.body[0]["errorCode"], "NOT_FOUND");
+    }
+
+    #[test]
+    fn parses_composite_response_with_default_empty_when_absent() {
+        // Defensive: schema always includes compositeResponse, but empty
+        // default keeps us from panicking on a hypothetical malformed
+        // response. Mirrors BatchResponse / CompositeTreeResponse handling.
+        let body = r#"{}"#;
+        let resp: CompositeResponse = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert!(resp.composite_response.is_empty());
     }
 
     #[test]

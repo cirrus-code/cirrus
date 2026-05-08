@@ -17,6 +17,7 @@
 use crate::error::{CloudburstError, CloudburstResult, SalesforceError};
 use reqwest::header::HeaderMap;
 use serde::Deserialize;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 
@@ -151,6 +152,189 @@ pub struct SObjectMetadata {
     /// because Salesforce adds keys here across API versions.
     #[serde(default)]
     pub urls: HashMap<String, String>,
+}
+
+/// Bulk API 2.0 operation kind. Shared between ingest jobs (insert /
+/// update / upsert / delete / hardDelete) and query jobs (query / queryAll).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BulkOperation {
+    #[serde(rename = "insert")]
+    Insert,
+    #[serde(rename = "update")]
+    Update,
+    #[serde(rename = "upsert")]
+    Upsert,
+    #[serde(rename = "delete")]
+    Delete,
+    /// Permanent delete (skips Recycle Bin). Requires "Bulk API Hard
+    /// Delete" permission, which is disabled by default.
+    #[serde(rename = "hardDelete")]
+    HardDelete,
+    #[serde(rename = "query")]
+    Query,
+    #[serde(rename = "queryAll")]
+    QueryAll,
+}
+
+/// State of a Bulk API 2.0 job.
+///
+/// Ingest job lifecycle: `Open` → `UploadComplete` → `InProgress` →
+/// `JobComplete` / `Failed` / `Aborted`.
+///
+/// Query job lifecycle: `UploadComplete` → `InProgress` → `JobComplete` /
+/// `Failed` / `Aborted` (query jobs skip `Open` since the SOQL is
+/// supplied at create time — there's no separate upload step).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BulkJobState {
+    /// Ingest job: created, accepting CSV uploads. Not used by query jobs.
+    Open,
+    /// Upload finished (ingest) or job created (query); Salesforce will
+    /// pick it up for processing.
+    UploadComplete,
+    /// Job is being processed.
+    InProgress,
+    /// Job is fully processed. Inspect record-level results for
+    /// per-row outcomes.
+    JobComplete,
+    /// Job was aborted by the caller or an admin.
+    Aborted,
+    /// Job failed at the platform level. For query jobs, see
+    /// [`BulkQueryJob::error_message`] for the reason.
+    Failed,
+}
+
+/// CSV line ending used in Bulk 2.0 job payloads and result downloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BulkLineEnding {
+    /// `\n` only.
+    #[default]
+    LF,
+    /// `\r\n`.
+    CRLF,
+}
+
+/// CSV column delimiter used in Bulk 2.0 job payloads and result
+/// downloads. Salesforce supports a fixed set of single-character
+/// delimiters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum BulkColumnDelimiter {
+    Backquote,
+    Caret,
+    #[default]
+    Comma,
+    Pipe,
+    Semicolon,
+    Tab,
+}
+
+/// Response from `POST /jobs/ingest` and `GET /jobs/ingest/{jobId}`.
+///
+/// Field availability varies by job state — `number_records_processed`,
+/// `number_records_failed`, and timing fields are populated only after
+/// the job reaches `JobComplete` or `Failed`. `content_url` is populated
+/// only while the job is in `Open` state (it's the URL for uploading
+/// CSV; we use it as a hint, not as the upload target — that's just the
+/// well-known `/batches` path).
+#[derive(Debug, Clone, Deserialize)]
+pub struct BulkIngestJob {
+    pub id: String,
+    pub operation: BulkOperation,
+    pub object: String,
+    pub state: BulkJobState,
+    #[serde(rename = "externalIdFieldName", default)]
+    pub external_id_field_name: Option<String>,
+    #[serde(rename = "lineEnding")]
+    pub line_ending: BulkLineEnding,
+    #[serde(rename = "columnDelimiter")]
+    pub column_delimiter: BulkColumnDelimiter,
+    #[serde(rename = "contentType")]
+    pub content_type: String,
+    #[serde(rename = "contentUrl", default)]
+    pub content_url: Option<String>,
+    #[serde(rename = "apiVersion")]
+    pub api_version: f32,
+    #[serde(rename = "jobType")]
+    pub job_type: String,
+    #[serde(rename = "concurrencyMode")]
+    pub concurrency_mode: String,
+    #[serde(rename = "createdById")]
+    pub created_by_id: String,
+    #[serde(rename = "createdDate")]
+    pub created_date: String,
+    #[serde(rename = "systemModstamp")]
+    pub system_modstamp: String,
+    #[serde(rename = "assignmentRuleId", default)]
+    pub assignment_rule_id: Option<String>,
+    #[serde(rename = "numberRecordsProcessed", default)]
+    pub number_records_processed: Option<i64>,
+    #[serde(rename = "numberRecordsFailed", default)]
+    pub number_records_failed: Option<i64>,
+    #[serde(default)]
+    pub retries: Option<i32>,
+    #[serde(rename = "totalProcessingTime", default)]
+    pub total_processing_time: Option<i64>,
+    #[serde(rename = "apiActiveProcessingTime", default)]
+    pub api_active_processing_time: Option<i64>,
+    #[serde(rename = "apexProcessingTime", default)]
+    pub apex_processing_time: Option<i64>,
+}
+
+/// Response from `POST /jobs/query` and `GET /jobs/query/{jobId}`.
+///
+/// Field availability varies by job state. `error_message` is populated
+/// when [`state`](Self::state) is `Failed`; otherwise `None`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BulkQueryJob {
+    pub id: String,
+    pub operation: BulkOperation,
+    pub state: BulkJobState,
+    /// SOQL query the job runs.
+    pub query: String,
+    #[serde(rename = "lineEnding")]
+    pub line_ending: BulkLineEnding,
+    #[serde(rename = "columnDelimiter")]
+    pub column_delimiter: BulkColumnDelimiter,
+    #[serde(rename = "contentType")]
+    pub content_type: String,
+    #[serde(rename = "apiVersion")]
+    pub api_version: f32,
+    #[serde(rename = "jobType")]
+    pub job_type: String,
+    #[serde(rename = "concurrencyMode")]
+    pub concurrency_mode: String,
+    #[serde(rename = "createdById")]
+    pub created_by_id: String,
+    #[serde(rename = "createdDate")]
+    pub created_date: String,
+    #[serde(rename = "systemModstamp")]
+    pub system_modstamp: String,
+    #[serde(rename = "numberRecordsProcessed", default)]
+    pub number_records_processed: Option<i64>,
+    #[serde(default)]
+    pub retries: Option<i32>,
+    #[serde(rename = "totalProcessingTime", default)]
+    pub total_processing_time: Option<i64>,
+    #[serde(rename = "errorMessage", default)]
+    pub error_message: Option<String>,
+}
+
+/// Result of `GET /jobs/query/{jobId}/results`.
+///
+/// Carries the CSV body alongside the cursor headers Salesforce uses for
+/// pagination. `locator` is `None` when the result set is fully drained;
+/// pass it back to [`crate::handlers::bulk::BulkQueryHandler::results`]
+/// in subsequent calls to fetch the next page.
+#[derive(Debug, Clone)]
+pub struct BulkQueryResults {
+    /// CSV body of this result page.
+    pub csv: bytes::Bytes,
+    /// Pagination cursor (`Sforce-Locator` response header). `None` when
+    /// the job has emitted all rows.
+    pub locator: Option<String>,
+    /// Number of records included in this page (`Sforce-NumberOfRecords`
+    /// response header).
+    pub number_of_records: Option<i64>,
 }
 
 /// One entry from `GET /services/data` — a Salesforce REST API version.
@@ -383,19 +567,28 @@ pub(crate) fn parse_response_bytes<R: DeserializeOwned>(
         }
         return serde_json::from_slice(bytes).map_err(CloudburstError::Serialization);
     }
+    Err(parse_error_response(status, bytes))
+}
 
+/// Parses a non-2xx response body into a [`CloudburstError::Api`].
+///
+/// Tries the standard Salesforce error-array shape first; falls back to
+/// preserving the raw body for debugging when the array doesn't parse.
+/// Used both by [`parse_response_bytes`] (JSON success path) and the
+/// raw-body transport path that bypasses JSON deserialization on success
+/// (Bulk API CSV downloads).
+pub(crate) fn parse_error_response(status: u16, bytes: &[u8]) -> CloudburstError {
     let errors = serde_json::from_slice::<Vec<SalesforceError>>(bytes).unwrap_or_default();
     let raw = if errors.is_empty() {
         Some(String::from_utf8_lossy(bytes).into_owned())
     } else {
         None
     };
-
-    Err(CloudburstError::Api {
+    CloudburstError::Api {
         status,
         errors,
         raw,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -723,6 +916,125 @@ mod tests {
         let body = r#"{"hasErrors": false}"#;
         let resp: BatchResponse = parse_response_bytes(200, body.as_bytes()).unwrap();
         assert!(resp.results.is_empty());
+    }
+
+    #[test]
+    fn parses_bulk_ingest_job_response() {
+        // Mirrors the documented create-job response.
+        let body = json!({
+            "id": "750xx0000004C92AAE",
+            "operation": "insert",
+            "object": "Account",
+            "createdById": "005xx000001IECDAA4",
+            "createdDate": "2018-12-10T17:50:19.000+0000",
+            "systemModstamp": "2018-12-10T17:51:27.000+0000",
+            "state": "Open",
+            "concurrencyMode": "Parallel",
+            "contentType": "CSV",
+            "apiVersion": 60.0,
+            "contentUrl": "/services/data/v60.0/jobs/ingest/750xx0000004C92AAE/batches",
+            "lineEnding": "LF",
+            "columnDelimiter": "COMMA",
+            "jobType": "V2Ingest"
+        })
+        .to_string();
+        let job: BulkIngestJob = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert_eq!(job.id, "750xx0000004C92AAE");
+        assert_eq!(job.operation, BulkOperation::Insert);
+        assert_eq!(job.state, BulkJobState::Open);
+        assert_eq!(job.line_ending, BulkLineEnding::LF);
+        assert_eq!(job.column_delimiter, BulkColumnDelimiter::Comma);
+        assert!(job.number_records_processed.is_none());
+    }
+
+    #[test]
+    fn parses_bulk_ingest_job_complete_with_metrics() {
+        // After processing, Salesforce populates the timing/count fields.
+        let body = json!({
+            "id": "750xx",
+            "operation": "upsert",
+            "object": "Account",
+            "externalIdFieldName": "External_Id__c",
+            "createdById": "005xx",
+            "createdDate": "2024-01-01T00:00:00.000+0000",
+            "systemModstamp": "2024-01-01T00:00:01.000+0000",
+            "state": "JobComplete",
+            "concurrencyMode": "Parallel",
+            "contentType": "CSV",
+            "apiVersion": 60.0,
+            "lineEnding": "CRLF",
+            "columnDelimiter": "TAB",
+            "jobType": "V2Ingest",
+            "numberRecordsProcessed": 1000,
+            "numberRecordsFailed": 5,
+            "retries": 0,
+            "totalProcessingTime": 2349,
+            "apiActiveProcessingTime": 1500,
+            "apexProcessingTime": 0
+        })
+        .to_string();
+        let job: BulkIngestJob = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert_eq!(job.operation, BulkOperation::Upsert);
+        assert_eq!(job.state, BulkJobState::JobComplete);
+        assert_eq!(job.line_ending, BulkLineEnding::CRLF);
+        assert_eq!(job.column_delimiter, BulkColumnDelimiter::Tab);
+        assert_eq!(job.external_id_field_name.as_deref(), Some("External_Id__c"));
+        assert_eq!(job.number_records_processed, Some(1000));
+        assert_eq!(job.number_records_failed, Some(5));
+    }
+
+    #[test]
+    fn parses_bulk_query_job_response() {
+        let body = json!({
+            "id": "750xx",
+            "operation": "queryAll",
+            "state": "JobComplete",
+            "query": "SELECT Id, Name FROM Account",
+            "createdById": "005xx",
+            "createdDate": "2024-01-01T00:00:00.000+0000",
+            "systemModstamp": "2024-01-01T00:00:01.000+0000",
+            "concurrencyMode": "Parallel",
+            "contentType": "CSV",
+            "apiVersion": 60.0,
+            "lineEnding": "LF",
+            "columnDelimiter": "COMMA",
+            "jobType": "V2Query",
+            "numberRecordsProcessed": 5000,
+            "totalProcessingTime": 8000
+        })
+        .to_string();
+        let job: BulkQueryJob = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert_eq!(job.operation, BulkOperation::QueryAll);
+        assert_eq!(job.state, BulkJobState::JobComplete);
+        assert_eq!(job.query, "SELECT Id, Name FROM Account");
+        assert!(job.error_message.is_none());
+    }
+
+    #[test]
+    fn parses_bulk_query_job_failed_with_error_message() {
+        let body = json!({
+            "id": "750xx",
+            "operation": "query",
+            "state": "Failed",
+            "query": "SELECTT Id FROM Account",
+            "createdById": "005xx",
+            "createdDate": "2024-01-01T00:00:00.000+0000",
+            "systemModstamp": "2024-01-01T00:00:01.000+0000",
+            "concurrencyMode": "Parallel",
+            "contentType": "CSV",
+            "apiVersion": 60.0,
+            "lineEnding": "LF",
+            "columnDelimiter": "COMMA",
+            "jobType": "V2Query",
+            "errorMessage": "MALFORMED_QUERY: unexpected token"
+        })
+        .to_string();
+        let job: BulkQueryJob = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert_eq!(job.state, BulkJobState::Failed);
+        assert_eq!(
+            job.error_message.as_deref(),
+            Some("MALFORMED_QUERY: unexpected token")
+        );
     }
 
     #[test]

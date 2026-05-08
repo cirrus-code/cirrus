@@ -50,12 +50,14 @@ mod response;
 
 pub use auth::{AuthSession, SharedAuth};
 pub use error::{CloudburstError, CloudburstResult, SalesforceError};
+pub use handlers::bulk::{BulkIngestSpec, BulkQuerySpec};
 pub use handlers::composite::{BatchRequest, BatchSubrequest, CompositeRequest, CompositeSubrequest};
 pub use response::{
-    ApiVersion, BatchResponse, BatchSubresult, CompositeError, CompositeResponse,
-    CompositeSubresponse, CompositeTreeResponse, CompositeTreeResult, DescribeGlobal, Limit,
-    OrgLimits, QueryResult, SObjectCollectionResult, SObjectCreateResult, SObjectMetadata,
-    SearchResult,
+    ApiVersion, BatchResponse, BatchSubresult, BulkColumnDelimiter, BulkIngestJob, BulkJobState,
+    BulkLineEnding, BulkOperation, BulkQueryJob, BulkQueryResults, CompositeError,
+    CompositeResponse, CompositeSubresponse, CompositeTreeResponse, CompositeTreeResult,
+    DescribeGlobal, Limit, OrgLimits, QueryResult, SObjectCollectionResult, SObjectCreateResult,
+    SObjectMetadata, SearchResult,
 };
 
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
@@ -314,6 +316,71 @@ impl Cloudburst {
         let status = response.status().as_u16();
         let bytes = response.bytes().await?;
         response::parse_response_bytes(status, &bytes)
+    }
+
+    /// Sends a request with a raw body (e.g. CSV) and a custom Content-Type,
+    /// parsing the response as JSON via [`response::parse_response_bytes`].
+    ///
+    /// Used by Bulk 2.0 ingest uploads — the request body is `text/csv`, the
+    /// response is the standard JSON job envelope. Path resolution still
+    /// follows [`Cloudburst::resolve_url`]'s three-mode semantics.
+    pub(crate) async fn send_with_body<R>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: bytes::Bytes,
+        content_type: &str,
+    ) -> CloudburstResult<R>
+    where
+        R: DeserializeOwned,
+    {
+        let url = self.resolve_url(path);
+        let token = self.auth.access_token().await?;
+        let response = self
+            .client
+            .request(method, url)
+            .bearer_auth(&*token)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body)
+            .send()
+            .await?;
+        let status = response.status().as_u16();
+        let bytes = response.bytes().await?;
+        response::parse_response_bytes(status, &bytes)
+    }
+
+    /// Fetches a response as raw bytes (e.g. CSV) plus its headers, with
+    /// the standard Salesforce error-array parsing on non-2xx.
+    ///
+    /// Used by Bulk 2.0 result downloads — the response body is `text/csv`
+    /// and the caller may need response headers for cursor pagination
+    /// (`Sforce-Locator`, `Sforce-NumberOfRecords`). Path resolution still
+    /// follows [`Cloudburst::resolve_url`]'s three-mode semantics.
+    pub(crate) async fn fetch_raw(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        accept: &str,
+        query: Option<&[(&str, &str)]>,
+    ) -> CloudburstResult<(reqwest::header::HeaderMap, bytes::Bytes)> {
+        let url = self.resolve_url(path);
+        let token = self.auth.access_token().await?;
+        let mut request = self
+            .client
+            .request(method, url)
+            .bearer_auth(&*token)
+            .header(reqwest::header::ACCEPT, accept);
+        if let Some(q) = query {
+            request = request.query(q);
+        }
+        let response = request.send().await?;
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let bytes = response.bytes().await?;
+        if (200..300).contains(&status) {
+            return Ok((headers, bytes));
+        }
+        Err(response::parse_error_response(status, &bytes))
     }
 }
 

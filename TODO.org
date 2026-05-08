@@ -5,9 +5,10 @@
 
 * Status snapshot
 - Auth flows: 5/5 priority flows shipped (JWT, Refresh, Client Credentials, Web Server PKCE, Token Exchange).
-- API surface: Phase 1 + entire composite family shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=, =composite/sobjects= (create/update/upsert/delete/retrieve), =composite= (chained sub-requests with =@{ref.field}= binding).
-- Open-ended client escape hatch shipped: =get= / =get_with_query= / =post= / =put= / =patch= / =delete= / =request_builder= / =execute= on =Cloudburst= with three-mode path resolution. Cross-cutting infrastructure unblocked.
-- Test count baseline: 153 unit + 2 doctest, all passing; clippy clean.
+- API surface: Phase 1 + entire composite family + Bulk 2.0 (ingest + query) shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=, =composite/sobjects=, =composite=, =bulk().ingest()=, =bulk().query()=.
+- Open-ended client escape hatch shipped: =get= / =get_with_query= / =post= / =put= / =patch= / =delete= / =request_builder= / =execute= on =Cloudburst= with three-mode path resolution.
+- Raw-body transport helpers shipped (=send_with_body= for CSV uploads, =fetch_raw= for CSV downloads with pagination headers). =parse_error_response= extracted from =parse_response_bytes= to share error-array parsing across both transport paths.
+- Test count baseline: 173 unit + 2 doctest, all passing; clippy clean.
 
 * Design principle: open-ended client (octocrab-style escape hatch)
 :PROPERTIES:
@@ -117,7 +118,7 @@ either typed JSON or =serde_json::Value=.
 - Per-subrequest failures are *not* translated into transport errors — Salesforce returns HTTP 200 for the outer call and the caller inspects =has_errors= + =BatchSubresult::is_success()=. Top-level batch deserialization errors (e.g. invalid sub-request URL) still surface as =CloudburstError::Api=.
 - Sub-request URLs do not flow through =resolve_url=; they are version-prefixed strings (=v60.0/sobjects/...=) per Salesforce's documented dispatch under =/services/data/=.
 
-* Phase 2 — Power-user surface [3/?]
+* Phase 2 — Power-user surface [4/?]
 :PROPERTIES:
 :GOAL: Cover the requests jsforce/simple-salesforce users reach for after CRUD.
 :END:
@@ -139,7 +140,13 @@ either typed JSON or =serde_json::Value=.
 - *Sub-request URL shape diverges from =/composite/batch=:* generic composite requires =/services/data/vXX.X/...= (full prefix), batch requires =vXX.X/...= (no prefix). Documented prominently on =execute= because crossing them gives a 400 from Salesforce.
 - Reference binding (=@{ref.field}=) is a server-side template; SDK ferries it through unchanged. Field-name case-sensitivity (=@{ref.id}= vs =@{ref.Id}= reach different fields) is the caller's responsibility.
 - =collateSubrequests= defaults to =true= since v49.0 (server-side default change). =CompositeRequest::collate_subrequests: None= preserves whichever default the configured =api_version= would use.
-** TODO Bulk API 2.0 (=/jobs/ingest=, =/jobs/query=) — async CSV ingest/query
+** DONE Bulk API 2.0 (=handlers::bulk=)
+- =Cloudburst::bulk()= → =BulkHandler= → =ingest()= / =query()= sub-handlers covering both async flavors.
+- Ingest lifecycle: =create=, =upload= (CSV bytes via =text/csv=), =close=, =abort=, =get=, =delete=, plus raw-CSV result fetchers =successful_results= / =failed_results= / =unprocessed_records=.
+- Query lifecycle: =create=, =get=, =results= (with =Sforce-Locator= cursor pagination via =BulkQueryResults.locator=), =abort=, =delete=. Treats =Sforce-Locator: null= as drained (=locator: None=), matching the documented end-of-stream signal.
+- Typed enums =BulkOperation=, =BulkJobState=, =BulkLineEnding=, =BulkColumnDelimiter=. Distinct =BulkIngestJob= / =BulkQueryJob= response structs because their field shapes diverge meaningfully (object/externalIdFieldName/numberRecordsFailed vs. query/errorMessage).
+- *No automated polling.* SDK exposes the building blocks; correct poll cadence depends on payload size and is the caller's call. Documented prominently on =BulkIngestHandler= and =BulkQueryHandler=.
+- Required new transport: =Cloudburst::send_with_body= (raw upload with custom Content-Type) and =Cloudburst::fetch_raw= (raw bytes + headers download). Both go through =parse_error_response= on non-2xx so Salesforce errors surface as =CloudburstError::Api= consistently with the JSON path.
 ** TODO Apex REST passthrough — =/services/apexrest/{path}=
 ** TODO Tooling API — Apex, =SymbolTable=, anonymous execute
 ** TODO Event monitoring — =EventLogFile= retrieve + decode

@@ -8,3 +8,8 @@ tmp/
 target/
 result
 rust_out
+
+# Integration-test secrets — never commit
+.env
+*.pem
+

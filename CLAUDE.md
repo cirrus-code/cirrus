@@ -76,7 +76,24 @@ The probe scripts (`scripts/sf-doc-probe.js` / `.nu`) are kept for future invest
 - Mock JSON fixtures should cite specific doc pages. When an audit found `BulkQueryJob.query` was a bogus field (Salesforce never returns it), the fix was to stop matching the mock to our wrong assumption and start matching the doc's actual example. Doc-driven > prior-knowledge.
 - Each new handler ships with wiremock coverage of: happy path, error array, edge cases documented in the wire shape (partial-success semantics, header cursors, etc.).
 - If you can't verify a wire-shape claim against docs, flag it explicitly in code — see `ExecuteAnonymousResult` in `response.rs` for the established pattern ("Wire-shape provenance" docstring).
-- Live integration tests are deferred to pre-release (env-gated, separate test target). Don't add network-touching tests to the default suite.
+
+### Integration tests
+
+Live tests against a real Salesforce sandbox / dev / scratch org live under `tests/integration.rs` (one binary, submodules under `tests/integration/`). All `#[ignore]`-gated so they don't run by default.
+
+```bash
+# Configure once: copy .env.example to .env, fill in the values
+cp .env.example .env
+
+# Run all integration tests (sequential — they share org state)
+cargo nextest run --test integration --run-ignored only -- --test-threads=1
+```
+
+The harness (`tests/integration/common.rs`) refuses to run unless `INSTANCE_URL` matches a known sandbox/dev/scratch My Domain pattern (`.sandbox.`, `.develop.`, or `.scratch.` infix before `.my.salesforce.com`). Override with `CLOUDBURST_INTEGRATION_FORCE=1` only after verifying the target org is safe for destructive writes — the safe-list catches Enhanced Domains URLs but not legacy pre-Spring-'23 sandbox URLs.
+
+Auth supports two paths: paste a static token from `sf org display`, or configure JWT bearer flow with a connected app + private key. Static-token mode is the easy bootstrap; JWT exercises the full auth flow.
+
+Don't add network-touching tests to the default (`cargo test`) suite — those should always be wiremock-backed and offline.
 
 ## Memory and cross-session notes
 

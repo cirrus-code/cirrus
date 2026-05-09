@@ -1,0 +1,44 @@
+// Integration tests run with #[ignore] so they don't pollute default
+// `cargo test`. We allow panicking/printing constructs that the main
+// crate forbids — these are tests, the lints aren't useful here.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr
+)]
+
+//! Integration tests against a real Salesforce sandbox / dev / scratch
+//! org. All tests are `#[ignore]` so they don't run with default
+//! `cargo test`. Run with:
+//!
+//! ```bash
+//! cargo nextest run --run-ignored only -E 'binary(integration)' -- --test-threads=1
+//! # or, with cargo's built-in runner:
+//! cargo test --test integration -- --ignored --test-threads=1
+//! ```
+//!
+//! Sequential (`--test-threads=1`) keeps tests from colliding on
+//! shared org state and Daily API Request quota. Parallel execution
+//! is fine for the read-only smoke tests but unsafe for the write
+//! suite (sObject CRUD, Bulk ingest, etc.) that share an Account
+//! pool.
+//!
+//! Configuration via `.env` at the repo root or shell environment.
+//! See `tests/integration/common.rs` for the full env-var contract.
+//!
+//! # Test layout
+//!
+//! - `common` — shared harness (env loading, client construction,
+//!   safety guards). Used by every test module.
+//! - `smoke` — read-only verifications: versions, limits,
+//!   version-negotiation, `Sforce-Limit-Info` capture.
+//! - (Future modules — sobjects CRUD, query pagination, Bulk 2.0,
+//!   composite, tooling — will land as their own files.)
+
+#[path = "integration/common.rs"]
+mod common;
+
+#[path = "integration/smoke.rs"]
+mod smoke;

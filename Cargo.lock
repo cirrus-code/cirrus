@@ -145,6 +145,7 @@ dependencies = [
  "bytes",
  "camino",
  "fs-err",
+ "futures",
  "getrandom 0.4.2",
  "http-serde",
  "jsonwebtoken",

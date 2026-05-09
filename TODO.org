@@ -8,7 +8,7 @@
 - API surface: Phase 1 + entire composite family + Bulk 2.0 + Apex REST + Tooling API + Event Monitoring shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=, =composite/sobjects=, =composite=, =bulk().ingest()=, =bulk().query()=, =apex().{get,post,put,patch,delete}=, =tooling().{describe_global,sobject().*,query,search,execute_anonymous}=, =event_monitoring().{download,download_url}= + =EventLogFileRecord=.
 - Open-ended client escape hatch shipped: =get= / =get_with_query= / =post= / =put= / =patch= / =delete= / =request_builder= / =execute= on =Cloudburst= with three-mode path resolution.
 - Raw-body transport helpers shipped (=send_with_body= for CSV uploads, =fetch_raw= for CSV downloads with pagination headers). =parse_error_response= extracted from =parse_response_bytes= to share error-array parsing across both transport paths.
-- Test count baseline: 210 unit + 2 doctest, all passing; clippy clean.
+- Test count baseline: 218 unit + 2 doctest, all passing; clippy clean.
 
 * Design principle: open-ended client (octocrab-style escape hatch)
 :PROPERTIES:
@@ -196,7 +196,7 @@ either typed JSON or =serde_json::Value=.
 ** TODO UI API =/ui-api/...= — record / record-defaults / picklist-values
 ** TODO GraphQL =/services/data/vXX.X/graphql= — single endpoint, schema-driven
 
-* Phase 4 — Niche / specialized [0/9]
+* Phase 4 — Niche / specialized [0/10]
 ** TODO Async query =/async-queries=
 ** TODO Knowledge =/knowledgeManagement= and =/support/knowledgeArticles=
 ** TODO Files / ContentVersion uploads — multipart, the only place we need new transport
@@ -206,13 +206,22 @@ either typed JSON or =serde_json::Value=.
 ** TODO Wave / CRM Analytics
 ** TODO Salesforce Functions
 ** TODO Pub/Sub (gRPC, separate transport — likely a future crate)
+** TODO Metadata API REST deploy surface (=/services/data/vXX.X/metadata/deployRequest=)
+:PROPERTIES:
+:NOTE: Deploy-only — Salesforce's Metadata REST surface covers exactly the deployment lifecycle. Retrieve / list / describe / read / per-type CRUD are SOAP-only and live in a future =cloudburst-metadata= crate.
+:END:
+- *In scope:* =POST /metadata/deployRequest= (submit ZIP), =GET /metadata/deployRequest/{id}= (status), =PATCH /metadata/deployRequest/{id}= (cancel), "Deploy a Recently Validated Component Set Without Tests" fast-path.
+- *Why ship this in the main REST crate:* deploy-only is a coherent CI/CD use case (build pipeline produces a ZIP, posts it, polls for status). No SOAP envelope needed for any of these calls — they're all REST + JSON-status + multipart-or-binary ZIP body. Reuses =send_with_body= / =fetch_raw= patterns from Bulk 2.0.
+- *Why "lower priority":* without retrieve, this is a half-product for any user who needs deploy/retrieve round-trips (DX/sandbox-promotion). Useful but narrow.
+- *Doc-driven:* page IDs identified — =meta_rest_intro=, =meta_rest_deploy=, =meta_rest_deploy_checkstatus=, =meta_rest_deploy_recentvalidation=, =meta_rest_deploy_cancel=. Fetched and verified deploy-only scope.
 
 * SKIP — explicitly out of scope
 :PROPERTIES:
 :RATIONALE: Codify why we are *not* doing these so the question doesn't keep recurring.
 :END:
-** SKIP SOAP API
-- Marked legacy by Salesforce; REST + Bulk 2.0 cover its responsibilities.
+** SKIP SOAP API (general)
+- Marked legacy by Salesforce; REST + Bulk 2.0 cover its responsibilities for the *data* tier.
+- *Caveat:* the Metadata API's retrieve / list / describe / read / per-type CRUD methods are SOAP-only with no REST equivalent. Those will live in a future =cloudburst-metadata= companion crate, NOT here. Deploy via REST is in scope (Phase 4).
 ** SKIP Streaming API (CometD)
 - Superseded by Pub/Sub API (gRPC).
 ** SKIP Console API
@@ -239,14 +248,21 @@ either typed JSON or =serde_json::Value=.
 - [ ] Automotive Cloud
 - [ ] Media Cloud
 
-* Cross-cutting infrastructure [1/10]
+* Cross-cutting infrastructure [2/10]
 ** DONE Open-ended client escape hatch
 - Public =get= / =get_with_query= / =post= / =put= / =patch= / =delete= on =Cloudburst=, plus =request_builder(method, path)= (auth-injected) and =execute(reqwest::Request)= (hands-off) for full bypass.
 - Three-mode path resolution in =Cloudburst::resolve_url=: relative → versioned, leading-=/= → instance-rooted, =http(s)://= → passthrough. Locks in the [[*Design principle: open-ended client (octocrab-style escape hatch)][design-principle contract]].
 - Existing handlers (=versions=, =query::query_more=) migrated to use the public =get=; legacy =get_unversioned= / =versioned_url= / =instance_url= / =send_versioned= helpers removed.
 - *Note for the next builder:* with the escape hatch in place, every new typed handler should layer over the public verbs (or =versioned_segments= + =send_at= when path encoding is needed) — not introduce parallel transport code.
+** DONE Pagination stream (=pagination::Records<R>= implementing =futures::Stream=)
+- New top-level =pagination= module. =Records<R>= is a runtime-agnostic =futures::Stream<Item = CloudburstResult<R>>= that walks =nextRecordsUrl= locators transparently.
+- Public API: =Cloudburst::query_stream= / =query_stream_as<R>= / =query_all_stream= / =query_all_stream_as<R>=, plus =ToolingHandler::query_stream= / =query_stream_as<R>=.
+- Lazy: each page fetch fires only when the previous page's buffer is drained. Drop the stream → no further requests. Verified by wiremock =.expect(0)= on a non-required follow-up locator.
+- Errors mid-stream surface once and terminate the stream (no retry — that's the retry-policy infra's job, separate item).
+- Runtime-agnostic by construction: only depends on =futures::Stream= and =BoxFuture=, which are runtime-neutral. Consumers can drive with smol/async-std/tokio — no =#[tokio::main]= required at the consumer level. (Reqwest's transport still needs Tokio internally, but that's a transport concern, not surfaced in the SDK's public types.)
+- *Not* covered: Bulk 2.0 query results (different cursor shape — =Sforce-Locator= header carrying literal "null" — and CSV bytes vs JSON records). A separate stream type would be needed; documented in the module-level comment as deliberately deferred.
+- 8 wiremock tests covering single-page, 3-page paginated, mid-stream error, drop-after-page-1 (no extra fetch), typed deserialization, =/queryAll= variant, Tooling-prefixed locator follow-ups, and buffer-then-fetch sequencing via atomic counter.
 ** TODO Standardize handler module template (request → builder → execute → typed response)
-** TODO Pagination iterator/stream abstraction (=nextRecordsUrl=, =nextPageUrl=, =nextRecordsLocator=)
 ** TODO Retry + backoff policy (=429=, =503=, transient =5xx=)
 ** TODO Rate-limit header surfacing (=Sforce-Limit-Info=)
 ** TODO API version selection / negotiation (default to "latest seen", allow override)

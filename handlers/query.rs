@@ -15,12 +15,27 @@
 //! Each method returns [`QueryResult<Value>`] by default; the `_as::<T>()`
 //! variants deserialize records into a caller-supplied type.
 //!
+//! # Streaming variants
+//!
+//! [`query_stream`], [`query_stream_as`], [`query_all_stream`], and
+//! [`query_all_stream_as`] return a [`Records<R>`](crate::Records) — a
+//! [`futures::Stream`] that walks subsequent pages lazily, fetching the
+//! next batch only when the current one is drained. See the
+//! [`pagination`](crate::pagination) module docs for the full
+//! contract.
+//!
 //! [`query`]: Cloudburst::query
 //! [`query_all`]: Cloudburst::query_all
 //! [`query_more`]: Cloudburst::query_more
+//! [`query_stream`]: Cloudburst::query_stream
+//! [`query_stream_as`]: Cloudburst::query_stream_as
+//! [`query_all_stream`]: Cloudburst::query_all_stream
+//! [`query_all_stream_as`]: Cloudburst::query_all_stream_as
+//! [`futures::Stream`]: futures::stream::Stream
 
 use crate::Cloudburst;
 use crate::error::CloudburstResult;
+use crate::pagination::Records;
 use crate::response::QueryResult;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -85,6 +100,43 @@ impl Cloudburst {
             format!("/{next_records_url}")
         };
         self.get(&path).await
+    }
+
+    /// Streams query records lazily, walking `nextRecordsUrl` locators
+    /// across pages. Yields one record at a time; subsequent pages are
+    /// fetched on demand as the consumer drains the buffer.
+    ///
+    /// See [`pagination`](crate::pagination) for the full contract.
+    pub fn query_stream(&self, soql: &str) -> Records<Value> {
+        self.query_stream_as(soql)
+    }
+
+    /// Typed variant of [`query_stream`](Self::query_stream).
+    pub fn query_stream_as<R: DeserializeOwned + Send + Unpin + 'static>(
+        &self,
+        soql: &str,
+    ) -> Records<R> {
+        let client = self.clone();
+        let soql = soql.to_string();
+        let initial = Box::pin(async move { client.query_as::<R>(&soql).await });
+        Records::new(self.clone(), initial)
+    }
+
+    /// Like [`query_stream`](Self::query_stream), but also includes
+    /// soft-deleted and archived records (`/queryAll`).
+    pub fn query_all_stream(&self, soql: &str) -> Records<Value> {
+        self.query_all_stream_as(soql)
+    }
+
+    /// Typed variant of [`query_all_stream`](Self::query_all_stream).
+    pub fn query_all_stream_as<R: DeserializeOwned + Send + Unpin + 'static>(
+        &self,
+        soql: &str,
+    ) -> Records<R> {
+        let client = self.clone();
+        let soql = soql.to_string();
+        let initial = Box::pin(async move { client.query_all_as::<R>(&soql).await });
+        Records::new(self.clone(), initial)
     }
 }
 

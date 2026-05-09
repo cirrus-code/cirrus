@@ -139,6 +139,33 @@ impl<'a> ToolingHandler<'a> {
         self.client.get_with_query("tooling/query", &query).await
     }
 
+    /// Streams Tooling-API query records lazily, walking
+    /// `nextRecordsUrl` locators across pages.
+    ///
+    /// See [`pagination`](crate::pagination) for the full contract.
+    /// Tooling-issued `nextRecordsUrl` locators carry the `tooling/`
+    /// path prefix in their URL; the same `query_more` machinery
+    /// follows them transparently.
+    pub fn query_stream(&self, soql: &str) -> crate::pagination::Records<Value> {
+        self.query_stream_as(soql)
+    }
+
+    /// Typed variant of [`query_stream`](Self::query_stream).
+    pub fn query_stream_as<R: DeserializeOwned + Send + Unpin + 'static>(
+        &self,
+        soql: &str,
+    ) -> crate::pagination::Records<R> {
+        let client = self.client.clone();
+        let soql = soql.to_string();
+        let initial = Box::pin(async move {
+            let query = [("q", soql.as_str())];
+            client
+                .get_with_query::<QueryResult<R>, _>("tooling/query", &query)
+                .await
+        });
+        crate::pagination::Records::new(self.client.clone(), initial)
+    }
+
     /// Runs a Tooling SOSL search.
     ///
     /// Calls `GET /services/data/{api_version}/tooling/search?q={sosl}`.

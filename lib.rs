@@ -46,12 +46,14 @@
 pub mod auth;
 mod error;
 pub mod handlers;
+pub mod pagination;
 mod response;
 
 pub use auth::{AuthSession, SharedAuth};
 pub use error::{CloudburstError, CloudburstResult, SalesforceError};
 pub use handlers::bulk::{BulkIngestSpec, BulkQuerySpec};
 pub use handlers::composite::{BatchRequest, BatchSubrequest, CompositeRequest, CompositeSubrequest};
+pub use pagination::Records;
 pub use response::{
     ApiVersion, BatchResponse, BatchSubresult, BulkColumnDelimiter, BulkIngestJob, BulkJobState,
     BulkLineEnding, BulkOperation, BulkQueryJob, BulkQueryResults, CompositeError,

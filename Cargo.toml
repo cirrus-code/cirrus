@@ -15,9 +15,10 @@ path = "lib.rs"
 [dependencies]
 async-trait = "0.1"
 base64 = "0.22"
-bytes = "1.11.1"
+bytes = "1.11"
 camino = "1.2"
 fs-err = "3.3"
+futures = { version = "0.3", default-features = false, features = ["std"] }
 getrandom = "0.4"
 http-serde = "2.1.1"
 jsonwebtoken = { version = "10.3", default-features = false, features = ["use_pem", "aws_lc_rs"] }

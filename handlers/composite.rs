@@ -293,7 +293,8 @@ pub struct CompositeSubrequest {
 /// - [`update`](Self::update) — `PATCH` on the bare collection (up to 200)
 /// - [`upsert`](Self::upsert) — `PATCH` on `/{sobject}/{externalIdField}` (up to 200)
 /// - [`delete`](Self::delete) — `DELETE` with `?ids=...` (up to 200)
-/// - [`retrieve`](Self::retrieve) — `GET` on `/{sobject}` with `?ids=...&fields=...` (up to 800)
+/// - [`retrieve`](Self::retrieve) — `GET` on `/{sobject}` with `?ids=...&fields=...` (up to ~800, URL-length-bound)
+/// - [`retrieve_with_body`](Self::retrieve_with_body) — `POST` on `/{sobject}` with `{ids, fields}` body (up to 2000)
 ///
 /// All methods return record-level results and never roll back across
 /// records on partial failure (when `allOrNone: false`, which is the
@@ -439,6 +440,52 @@ impl CompositeSObjectsHandler<'_> {
                 ]),
                 None,
             )
+            .await
+    }
+
+    /// Retrieves up to 2000 records of a single sObject type via
+    /// `POST /composite/sobjects/{sobject}` with body `{ids, fields}`.
+    ///
+    /// Functionally equivalent to [`retrieve`](Self::retrieve) but ferries
+    /// the IDs and field list in a JSON body instead of the query string.
+    /// Use this when:
+    ///
+    /// - The number of IDs exceeds the GET form's URL-length cap
+    ///   (~800 — Salesforce documents 414 URI Too Long beyond that).
+    /// - The total length of `fields` (e.g. many long custom field
+    ///   names) pushes a smaller batch over the URL cap.
+    ///
+    /// Records that don't exist or aren't visible appear as `null` in the
+    /// returned array — same per-position alignment as
+    /// [`retrieve`](Self::retrieve). Use [`retrieve_with_body_as`]`::<Option<T>>`
+    /// for typed deserialization in the presence of nulls.
+    ///
+    /// [`retrieve_with_body_as`]: Self::retrieve_with_body_as
+    pub async fn retrieve_with_body(
+        &self,
+        sobject: &str,
+        ids: &[&str],
+        fields: &[&str],
+    ) -> CloudburstResult<Vec<Value>> {
+        self.retrieve_with_body_as(sobject, ids, fields).await
+    }
+
+    /// Typed variant of [`retrieve_with_body`](Self::retrieve_with_body).
+    pub async fn retrieve_with_body_as<R: DeserializeOwned>(
+        &self,
+        sobject: &str,
+        ids: &[&str],
+        fields: &[&str],
+    ) -> CloudburstResult<Vec<R>> {
+        let url = self
+            .client
+            .versioned_segments(&["composite", "sobjects", sobject])?;
+        let body = serde_json::json!({
+            "ids": ids,
+            "fields": fields,
+        });
+        self.client
+            .send_at::<_, (), _>(reqwest::Method::POST, &url, None, Some(&body))
             .await
     }
 }
@@ -1293,6 +1340,35 @@ mod tests {
             .unwrap();
         assert_eq!(records[0].as_ref().unwrap().id, "001xx");
         assert!(records[1].is_none());
+    }
+
+    #[tokio::test]
+    async fn sobjects_retrieve_with_body_posts_ids_and_fields() {
+        // POST /composite/sobjects/{sobject} with {ids, fields} body —
+        // the high-cardinality (>800 ids) variant of retrieve.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/services/data/v60.0/composite/sobjects/Account"))
+            .and(body_json(json!({
+                "ids": ["001xx", "missing"],
+                "fields": ["Id", "Name"]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"attributes": {"type": "Account"}, "Id": "001xx", "Name": "Acme"},
+                null
+            ])))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let records = sf
+            .composite()
+            .sobjects()
+            .retrieve_with_body("Account", &["001xx", "missing"], &["Id", "Name"])
+            .await
+            .unwrap();
+        assert_eq!(records[0]["Id"], "001xx");
+        assert!(records[1].is_null());
     }
 
     #[tokio::test]

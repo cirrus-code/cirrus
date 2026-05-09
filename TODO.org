@@ -8,7 +8,7 @@
 - API surface: Phase 1 + entire composite family + Bulk 2.0 + Apex REST + Tooling API shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=, =composite/sobjects=, =composite=, =bulk().ingest()=, =bulk().query()=, =apex().{get,post,put,patch,delete}=, =tooling().{describe_global,sobject().*,query,query_all,execute_anonymous}=.
 - Open-ended client escape hatch shipped: =get= / =get_with_query= / =post= / =put= / =patch= / =delete= / =request_builder= / =execute= on =Cloudburst= with three-mode path resolution.
 - Raw-body transport helpers shipped (=send_with_body= for CSV uploads, =fetch_raw= for CSV downloads with pagination headers). =parse_error_response= extracted from =parse_response_bytes= to share error-array parsing across both transport paths.
-- Test count baseline: 201 unit + 2 doctest, all passing; clippy clean.
+- Test count baseline: 202 unit + 2 doctest, all passing; clippy clean.
 
 * Design principle: open-ended client (octocrab-style escape hatch)
 :PROPERTIES:
@@ -128,7 +128,9 @@ either typed JSON or =serde_json::Value=.
 - *All-or-nothing semantics:* if =has_errors= is true, the entire tree was rolled back — =results= lists only the failing =referenceId=s, not all records. Documented on the response struct so callers don't iterate looking for partial successes.
 - Limits documented in handler: 200 records total, 5 distinct sObject types, 5 levels of nesting.
 ** DONE Composite collections =/composite/sobjects= (=handlers::composite::sobjects=)
-- =Cloudburst::composite().sobjects()= sub-handler with =create=, =update=, =upsert=, =delete=, =retrieve= / =retrieve_as=. All return =Vec<SObjectCollectionResult>= except retrieve which returns =Vec<Value>= / =Vec<R>=.
+- =Cloudburst::composite().sobjects()= sub-handler with =create=, =update=, =upsert=, =delete=, =retrieve= / =retrieve_as=, =retrieve_with_body= / =retrieve_with_body_as=. All write methods return =Vec<SObjectCollectionResult>=; both retrieve forms return =Vec<Value>= / =Vec<R>=.
+- *Doc-driven audit:* verified all five resource pages (=resources_composite_sobjects_collections_{create,update,upsert,delete,retrieve}=) and =resources_composite_subrequest_result= via the new fetcher. Confirmed =SObjectCollectionResult= shape (=id?, success, errors, created?=), =CompositeError.statusCode= shape, and =CompositeSubresponse= field names. Initial shipment had been correct on those — luck rather than process; audit-driven now.
+- *Audit gap fixed:* added =retrieve_with_body= / =retrieve_with_body_as= for =POST /composite/sobjects/{sobject}= with =({ids, fields})= body. Supports up to 2000 records vs. ~800 for the GET form (URL-length-bound). Wiremock-tested.
 - Default semantics are *partial-success* (=allOrNone: false=) — distinct from =/composite/tree=. Caller sets =allOrNone: true= in the body / query string for transactional behavior.
 - Per-record errors share =CompositeError= with =/composite/tree= (same diverged =statusCode= shape).
 - =retrieve= surfaces missing records as =Value::Null= entries aligned 1:1 with input =ids=. Typed =retrieve_as::<Option<R>>()= is the documented idiom for handling them.

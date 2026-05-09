@@ -566,6 +566,18 @@ pub struct SObjectCollectionResult {
 /// `line` and `column` use `-1` as the "no error" sentinel — that's the
 /// SOAP-era convention bleeding through. Callers should branch on
 /// [`success`](Self::success) rather than checking these for `>= 0`.
+///
+/// # Wire-shape provenance
+///
+/// **The JSON wire shape of the REST `executeAnonymous` response is not
+/// documented in Salesforce's public REST docs.** Salesforce ships a
+/// SOAP `ExecuteAnonymousResult` complex type whose fields these names
+/// mirror (`compiled`, `compileProblem`, `success`, `line`, `column`,
+/// `exceptionMessage`, `exceptionStackTrace`); the Tooling REST API
+/// historically serializes that SOAP type as JSON via standard
+/// camelCase conversion. Until live integration tests verify against a
+/// real org, treat field names here as best-effort. If a real-org test
+/// reveals a divergence, this struct is the canonical place to fix it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExecuteAnonymousResult {
     /// `true` if the Apex source compiled. `false` indicates a syntax

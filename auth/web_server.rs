@@ -190,6 +190,10 @@ impl PendingExchange {
             access_token: token.access_token,
             refresh_token: token.refresh_token,
             instance_url: token.instance_url,
+            id: token.id,
+            issued_at: token.issued_at,
+            signature: token.signature,
+            scope: token.scope,
         })
     }
 
@@ -210,6 +214,18 @@ pub struct CompletedSession {
     pub refresh_token: Option<String>,
     /// REST instance URL reported by the token endpoint.
     pub instance_url: String,
+    /// Salesforce user-identity URL (e.g.
+    /// `https://login.salesforce.com/id/{org_id}/{user_id}`). Identifies
+    /// which user was authenticated.
+    pub id: Option<String>,
+    /// Token-issuance timestamp (milliseconds since epoch as a string).
+    pub issued_at: Option<String>,
+    /// Base64-encoded HMAC-SHA256 of `id + issued_at` with the
+    /// connected-app consumer secret as the key — lets the caller
+    /// verify the token came from Salesforce.
+    pub signature: Option<String>,
+    /// Granted scopes, space-separated.
+    pub scope: Option<String>,
 }
 
 /// Builder for [`WebServerFlow`].
@@ -500,6 +516,8 @@ mod tests {
                 "instance_url": "https://my-org.my.salesforce.com",
                 "token_type": "Bearer",
                 "id": "https://login.salesforce.com/id/00DXX/005XX",
+                "issued_at": "1278448384422",
+                "signature": "2wG3D9w1PzUlP/BEwa0u3D2C/D54p4Nz6tH5e9d0E5Q=",
                 "scope": "api refresh_token",
             })))
             .mount(&server)
@@ -521,6 +539,15 @@ mod tests {
         assert_eq!(session.access_token, "00DXX!ACCESS");
         assert_eq!(session.refresh_token.as_deref(), Some("5Aep861KIwKdekr"));
         assert_eq!(session.instance_url, "https://my-org.my.salesforce.com");
+        // New audit-driven assertions: surface the documented Salesforce
+        // identity fields so callers can verify which user authenticated.
+        assert_eq!(
+            session.id.as_deref(),
+            Some("https://login.salesforce.com/id/00DXX/005XX")
+        );
+        assert_eq!(session.issued_at.as_deref(), Some("1278448384422"));
+        assert!(session.signature.is_some());
+        assert_eq!(session.scope.as_deref(), Some("api refresh_token"));
     }
 
     #[tokio::test]

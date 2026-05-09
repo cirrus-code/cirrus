@@ -30,7 +30,15 @@
 
 const CONTENT_BASE = "https://developer.salesforce.com/docs/get_document_content"
 const MANIFEST_BASE = "https://developer.salesforce.com/docs/get_document"
+const HELP_CONTENT_BASE = "https://help.salesforce.com/apex/HCVFPropertiesAccessor"
 const DEFAULT_LANG = "en-us"
+
+# Guide namespaces that live on help.salesforce.com instead of
+# developer.salesforce.com. The OAuth flow docs (xcloud.*), feature
+# release notes (sfdo.*), and admin-facing how-to articles all use the
+# Visualforce-rendered help portal. There's no JSON content API for
+# these — only an HTML fragment served by HCVFPropertiesAccessor.
+const HELP_GUIDE_NAMESPACES = ["xcloud" "sfdo" "sf"]
 
 # We shell out to `curl` rather than using nu's `http get`. Reason:
 # developer.salesforce.com's docs site ironically rejects browser-like
@@ -69,7 +77,8 @@ def fetch-manifest [guide: string, lang: string] {
     ^curl --silent --show-error --fail --max-time 30 $url | from json
 }
 
-# Fetch the article content as JSON {id, title, content (HTML)}.
+# Fetch the article content as JSON {id, title, content (HTML)} from
+# the developer.salesforce.com docs API.
 def fetch-content [guide: string, page: string, lang: string, version: string] {
     let url = $"($CONTENT_BASE)/($guide)/($page).htm/($lang)/($version)"
     let raw = (^curl --silent --show-error --fail --max-time 30 $url)
@@ -77,6 +86,27 @@ def fetch-content [guide: string, page: string, lang: string, version: string] {
         error make { msg: $"content endpoint returned empty body — page id '($page)' may not exist in guide '($guide)'. Try `--guide ($guide) --manifest` to list valid IDs." }
     }
     $raw | from json
+}
+
+# Fetch help.salesforce.com article content as raw HTML. Returns a
+# pseudo-record matching fetch-content's output so the caller doesn't
+# branch.
+def fetch-help-content [guide: string, page: string, lang: string] {
+    # help.salesforce.com expects underscore-locale (en_US), not
+    # hyphen-locale (en-us). Translate.
+    let help_lang = ($lang | str replace -r '^([a-z]+)-([a-z]+)$' '$1_$2' | str upcase)
+    let url = $"($HELP_CONTENT_BASE)?id=($guide).($page).htm&language=($help_lang)&type=5"
+    let raw = (^curl --silent --show-error --fail --max-time 30 $url)
+    if ($raw | str length) == 0 {
+        error make { msg: $"help endpoint returned empty body for ($guide).($page)" }
+    }
+    { id: $page, title: $page, content: $raw }
+}
+
+# Returns true if the guide identifier should route through the
+# help.salesforce.com Visualforce backend instead of the docs API.
+def is-help-guide [guide: string]: nothing -> bool {
+    $HELP_GUIDE_NAMESPACES | any { |ns| $guide == $ns }
 }
 
 def main [
@@ -100,6 +130,9 @@ def main [
     }
 
     if $manifest {
+        if (is-help-guide $parsed.guide) {
+            error make { msg: $"--manifest unsupported for help.salesforce.com guides (($parsed.guide)) — they have no JSON TOC backend" }
+        }
         let mf = (fetch-manifest $parsed.guide $lang)
         let out = ($output | default $"($env.HOME)/.cache/cloudburst-sdk/sf-docs/manifest-($parsed.guide).json")
         mkdir ($out | path dirname)
@@ -109,20 +142,22 @@ def main [
         return
     }
 
-    let resolved_version = if $version != null {
-        $version
+    let doc = if (is-help-guide $parsed.guide) {
+        # help.salesforce.com guides skip version resolution — the
+        # Visualforce endpoint always serves the current article.
+        fetch-help-content $parsed.guide $parsed.page $lang
     } else {
-        let mf = (fetch-manifest $parsed.guide $lang)
-        # The manifest's `version` field is a record. The doc_version we
-        # want is what the content endpoint accepts; fall back to the
-        # first available_versions entry if the layout changes.
-        let v = ($mf.version | get --optional doc_version)
-        if $v != null { $v } else {
-            $mf.available_versions | get 0.doc_version
+        let resolved_version = if $version != null {
+            $version
+        } else {
+            let mf = (fetch-manifest $parsed.guide $lang)
+            let v = ($mf.version | get --optional doc_version)
+            if $v != null { $v } else {
+                $mf.available_versions | get 0.doc_version
+            }
         }
+        fetch-content $parsed.guide $parsed.page $lang $resolved_version
     }
-
-    let doc = (fetch-content $parsed.guide $parsed.page $lang $resolved_version)
     let out = ($output | default $"($env.HOME)/.cache/cloudburst-sdk/sf-docs/($parsed.page).($format)")
     mkdir ($out | path dirname)
 

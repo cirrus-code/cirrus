@@ -73,6 +73,9 @@ either typed JSON or =serde_json::Value=.
 * Authentication [5/5]
 :PROPERTIES:
 :CATEGORY: auth
+:AUDIT: RFC-driven audit complete. JWT (RFC 7523), Refresh (RFC 6749 §6), Client Credentials (RFC 6749 §4.4), Web Server PKCE (RFC 6749 §4.1 + RFC 7636), Token Exchange (RFC 8693) all verified spec-compliant. Token endpoint `/services/oauth2/token`, authorize endpoint `/services/oauth2/authorize`, OAuth error shape `{error, error_description}` (RFC 6749 §5.2). Public docs for Salesforce-specific OAuth fields live on help.salesforce.com (xcloud.* pages) and require full SPA rendering — out of reach for the curl-based fetcher. Salesforce-specific extensions verified against prior knowledge + REST API guide cross-references. Live integration tests are the load-bearing safety net.
+:AUDIT_FIX: Plumbed three previously-dropped Salesforce response fields (=id=, =signature=, =token_type=) through =TokenResponse=. =CompletedSession= (Web Server) and =TokenExchangeSession= (Token Exchange) now expose =id= (user identity URL), =signature= (HMAC-SHA256 for token verification), =issued_at=, and =scope= so federated-identity / user-aware callers can use them.
+:DEFERRED: RFC 8693 OPTIONAL fields (=resource=, =audience=, =requested_token_type=, =actor_token=/=actor_token_type=) not exposed on =TokenExchangeFlowBuilder= — defer until usage demands.
 :END:
 ** DONE Static token (=auth::static_token=)
 ** DONE JWT Bearer (=auth::jwt=) — RS256, 3-min skew on =exp=

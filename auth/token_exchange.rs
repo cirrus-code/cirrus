@@ -167,6 +167,8 @@ impl TokenExchangeFlow {
             instance_url: token.instance_url,
             issued_at: token.issued_at,
             scope: token.scope,
+            id: token.id,
+            signature: token.signature,
         })
     }
 }
@@ -188,6 +190,14 @@ pub struct TokenExchangeSession {
     pub issued_at: Option<String>,
     /// Granted scopes, space-separated.
     pub scope: Option<String>,
+    /// Salesforce user-identity URL (e.g.
+    /// `https://login.salesforce.com/id/{org_id}/{user_id}`). Distinct
+    /// from `id_token` (which is OIDC-specific).
+    pub id: Option<String>,
+    /// Base64-encoded HMAC-SHA256 of `id + issued_at` keyed on the
+    /// connected-app consumer secret. Lets the caller verify the token
+    /// came from Salesforce.
+    pub signature: Option<String>,
 }
 
 /// Builder for [`TokenExchangeFlow`].
@@ -463,6 +473,8 @@ mod tests {
                 "token_type": "Bearer",
                 "scope": "api refresh_token",
                 "issued_at": "1700000000000",
+                "id": "https://login.salesforce.com/id/00DXX/005XX",
+                "signature": "abcdef==",
             })))
             .mount(&server)
             .await;
@@ -478,6 +490,14 @@ mod tests {
         assert_eq!(session.instance_url, "https://my-org.my.salesforce.com");
         assert_eq!(session.scope.as_deref(), Some("api refresh_token"));
         assert_eq!(session.issued_at.as_deref(), Some("1700000000000"));
+        // Audit-driven: surface the documented Salesforce identity
+        // extensions so federated-identity callers can correlate the
+        // exchanged session with the original IdP user.
+        assert_eq!(
+            session.id.as_deref(),
+            Some("https://login.salesforce.com/id/00DXX/005XX")
+        );
+        assert_eq!(session.signature.as_deref(), Some("abcdef=="));
     }
 
     #[tokio::test]

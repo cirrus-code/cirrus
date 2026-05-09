@@ -14,10 +14,23 @@ use serde::{Deserialize, Serialize};
 
 /// Successful token-endpoint response.
 ///
-/// Fields not surfaced by any flow yet (`token_type`, `signature`, `id`)
-/// are deserialized into oblivion. `refresh_token`, `id_token`, `scope`,
-/// and `issued_at` are populated only when the flow + connected-app
-/// configuration cause Salesforce to include them.
+/// Mirrors the documented Salesforce token response shape, which is the
+/// standard OAuth 2.0 response (RFC 6749 §5.1: `access_token`, `token_type`,
+/// `refresh_token`, `scope`) plus Salesforce-specific extensions
+/// (`instance_url`, `id`, `issued_at`, `signature`).
+///
+/// Field availability depends on the flow + connected-app configuration:
+/// - `refresh_token` — only when the connected app's scope set includes
+///   `refresh_token` *and* the flow supports issuance (Web Server, Token
+///   Exchange). Never present on Client Credentials or JWT Bearer.
+/// - `id_token` — only when the requested `scope` includes `openid`
+///   (OIDC).
+/// - `scope` — present when the granted scope set differs from the
+///   requested set, or always on some flows. Treat as best-effort.
+/// - `issued_at` — milliseconds since epoch as a *string*, not a number.
+/// - `signature` / `id` / `token_type` — present on every successful
+///   flow except where Salesforce explicitly omits (e.g. some on-behalf-of
+///   exchanges).
 #[derive(Debug, Deserialize)]
 pub(super) struct TokenResponse {
     pub(super) access_token: String,
@@ -30,6 +43,28 @@ pub(super) struct TokenResponse {
     pub(super) scope: Option<String>,
     #[serde(default)]
     pub(super) issued_at: Option<String>,
+    /// Salesforce *user-identity URL*, e.g.
+    /// `https://login.salesforce.com/id/00DRO0000004sJ7/005RO0000005V0E`.
+    /// Distinct from `id_token` (which is OIDC). Useful for callers that
+    /// want to know which user they authenticated as.
+    #[serde(default)]
+    pub(super) id: Option<String>,
+    /// Base64-encoded HMAC-SHA256 of `id + issued_at` using the
+    /// connected app's consumer secret as the key. Lets callers verify
+    /// the token came from Salesforce, mitigating token-injection
+    /// attacks. Absent on flows that don't have a consumer secret
+    /// (some public-client variants).
+    #[serde(default)]
+    pub(super) signature: Option<String>,
+    /// Always `"Bearer"` for all OAuth 2.0 flows. Parsed for
+    /// completeness — callers haven't needed to inspect it so far, so
+    /// we don't currently propagate it to session structs. The
+    /// `#[allow]` keeps clippy quiet without dropping the field
+    /// (re-adding it would be a breaking change to the parsed shape if
+    /// Salesforce ever sets it to something other than "Bearer").
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub(super) token_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

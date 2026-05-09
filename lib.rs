@@ -56,7 +56,7 @@ pub use response::{
     ApiVersion, BatchResponse, BatchSubresult, BulkColumnDelimiter, BulkIngestJob, BulkJobState,
     BulkLineEnding, BulkOperation, BulkQueryJob, BulkQueryResults, CompositeError,
     CompositeResponse, CompositeSubresponse, CompositeTreeResponse, CompositeTreeResult,
-    DescribeGlobal, ExecuteAnonymousResult, Limit, OrgLimits, QueryResult,
+    DescribeGlobal, EventLogFileRecord, ExecuteAnonymousResult, Limit, OrgLimits, QueryResult,
     SObjectCollectionResult, SObjectCreateResult, SObjectMetadata, SearchResult,
 };
 

@@ -20,6 +20,7 @@
 pub mod apex;
 pub mod bulk;
 pub mod composite;
+pub mod event_monitoring;
 pub mod limits;
 pub mod query;
 pub mod search;

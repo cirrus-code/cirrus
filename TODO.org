@@ -5,10 +5,10 @@
 
 * Status snapshot
 - Auth flows: 5/5 priority flows shipped (JWT, Refresh, Client Credentials, Web Server PKCE, Token Exchange).
-- API surface: Phase 1 + entire composite family + Bulk 2.0 + Apex REST + Tooling API shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=, =composite/sobjects=, =composite=, =bulk().ingest()=, =bulk().query()=, =apex().{get,post,put,patch,delete}=, =tooling().{describe_global,sobject().*,query,query_all,execute_anonymous}=.
+- API surface: Phase 1 + entire composite family + Bulk 2.0 + Apex REST + Tooling API + Event Monitoring shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=, =composite/sobjects=, =composite=, =bulk().ingest()=, =bulk().query()=, =apex().{get,post,put,patch,delete}=, =tooling().{describe_global,sobject().*,query,search,execute_anonymous}=, =event_monitoring().{download,download_url}= + =EventLogFileRecord=.
 - Open-ended client escape hatch shipped: =get= / =get_with_query= / =post= / =put= / =patch= / =delete= / =request_builder= / =execute= on =Cloudburst= with three-mode path resolution.
 - Raw-body transport helpers shipped (=send_with_body= for CSV uploads, =fetch_raw= for CSV downloads with pagination headers). =parse_error_response= extracted from =parse_response_bytes= to share error-array parsing across both transport paths.
-- Test count baseline: 204 unit + 2 doctest, all passing; clippy clean.
+- Test count baseline: 210 unit + 2 doctest, all passing; clippy clean.
 
 * Design principle: open-ended client (octocrab-style escape hatch)
 :PROPERTIES:
@@ -122,7 +122,7 @@ either typed JSON or =serde_json::Value=.
 - Per-subrequest failures are *not* translated into transport errors — Salesforce returns HTTP 200 for the outer call and the caller inspects =has_errors= + =BatchSubresult::is_success()=. Top-level batch deserialization errors (e.g. invalid sub-request URL) still surface as =CloudburstError::Api=.
 - Sub-request URLs do not flow through =resolve_url=; they are version-prefixed strings (=v60.0/sobjects/...=) per Salesforce's documented dispatch under =/services/data/=.
 
-* Phase 2 — Power-user surface [6/7]
+* Phase 2 — Power-user surface [7/7]
 :PROPERTIES:
 :GOAL: Cover the requests jsforce/simple-salesforce users reach for after CRUD.
 :END:
@@ -173,7 +173,13 @@ either typed JSON or =serde_json::Value=.
 - *Doc-driven audit (post-rewrite of sf-doc.nu):* the canonical Tooling REST resource list at =intro_rest_resources= shipped =/query/=, =/search/=, =/executeAnonymous/=, =/sobjects/...=, =/completions=, =/runTests{Async,Sync}hronous=, =/tests/=, =/sobjects/ApexLog/{id}/Body/=. NO =/queryAll/=. Initial implementation incorrectly added =query_all=; fixed in audit. =search= was missing in initial implementation; added.
 - 15 wiremock tests covering CRUD, query, search, execute_anonymous (success / compile error / runtime error), and standard-error-array passthrough.
 - *Deferred:* upsert by external ID (narrow Tooling-API surface — defer until usage demands), =tooling/composite= (callers can reach via =composite()= with =tooling/...= subrequest URLs or the escape hatch), =/runTests{Async,Sync}hronous/= (test runner — callers can reach via escape hatch; typed builder when usage demands), =/completions=, =/tests/=, =/sobjects/ApexLog/{id}/Body/= (binary debug log retrieval — would reuse =fetch_raw=).
-** TODO Event monitoring — =EventLogFile= retrieve + decode
+** DONE Event Monitoring (=handlers::event_monitoring=)
+- =Cloudburst::event_monitoring()= → =EventMonitoringHandler= for binary CSV log-file downloads. Discovery (querying =EventLogFile=) goes through the existing =Cloudburst::query= / =query_as= — no duplicate query API.
+- Methods: =download(log_file_id)= constructs the path; =download_url(log_file_url)= takes the =LogFile= field straight from a queried record (instance-relative path with embedded API version, like =nextRecordsUrl=). Both reuse =fetch_raw= so non-2xx surfaces as =CloudburstError::Api= consistently.
+- New typed envelope =EventLogFileRecord= in =response.rs= covering documented fields (=Id=, =EventType=, =LogFile=, =LogDate=, =LogFileLength=, plus =Interval=/=Sequence=/=CreatedDate= for hourly support). Serde =default= on Optional fields keeps deserialization robust against partial SELECT clauses.
+- *No CSV decoding.* Column sets are =EventType=-dependent (per-type schemas live on the =LogFileFieldNames= / =LogFileFieldTypes= describe metadata), evolve across releases, and most callers want raw bytes for downstream pipelines (Splunk, Snowflake, etc.). Documented in the module-level comment.
+- *Doc-driven:* shipped against verified docs (=dome_event_log_file_query=, =dome_event_log_file_describe=, =event_log_file_hourly_overview=, =event_log_file_hourly_query=). Wire shape pinned via 6 wiremock tests covering download (by id, by url with/without leading slash), error path, and typed query of both 24-hour and hourly records.
+- *Deferred:* Real-Time Event Monitoring (RTEM) sObjects (=LoginEvent=, =ApiEvent=, =LightningUriEvent=, etc.) are queryable via standard =query()= already; a dedicated handler isn't needed unless we want subscription-via-Pub/Sub support, which is a separate gRPC effort.
 
 * Phase 3 — Secondary surface [0/10]
 :PROPERTIES:

@@ -364,6 +364,69 @@ pub struct BulkQueryResults {
     pub number_of_records: Option<i64>,
 }
 
+/// One `EventLogFile` sObject record returned by querying
+/// `SELECT ... FROM EventLogFile`.
+///
+/// Schema-stable platform fields are typed here; the underlying log
+/// payload (CSV bytes) is fetched separately via
+/// [`crate::handlers::event_monitoring::EventMonitoringHandler::download`].
+///
+/// # Field availability
+///
+/// - `Id`, `EventType`, `LogFile`, `LogDate`, `LogFileLength` are
+///   present whenever you `SELECT` them.
+/// - `Interval` and `Sequence` are populated when an org has hourly
+///   event log files enabled. `Interval` is `"Hourly"` for hourly
+///   files, `"Daily"` (or absent on older orgs) for 24-hour files.
+///   `Sequence` is `0` for daily files and increments per hourly file
+///   in the same hour bucket. Filter on `Interval = 'Hourly'` (or
+///   `Sequence != 0`) to read only hourly files.
+/// - `CreatedDate` is the timestamp the log file became downloadable —
+///   not the same as `LogDate` (when the events occurred). Use
+///   `CreatedDate > <last-fetch>` to drive incremental ingestion (per
+///   Salesforce's documented best practice).
+///
+/// All Optional fields are `None` when the SELECT clause didn't ask
+/// for them; serde's `default` attribute keeps deserialization robust
+/// against partial column sets.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EventLogFileRecord {
+    #[serde(rename = "Id")]
+    pub id: String,
+    /// Event category — `"API"`, `"Login"`, `"URI"`, `"Apex"`, etc.
+    /// The set of EventTypes is large and grows across releases.
+    #[serde(rename = "EventType")]
+    pub event_type: String,
+    /// Instance-relative URL of the CSV log payload, e.g.
+    /// `/services/data/v66.0/sobjects/EventLogFile/0AT.../LogFile`.
+    /// Pass to [`crate::handlers::event_monitoring::EventMonitoringHandler::download_url`]
+    /// directly.
+    #[serde(rename = "LogFile")]
+    pub log_file: String,
+    /// Date the events occurred (UTC). Distinct from `CreatedDate`
+    /// (when the file became downloadable).
+    #[serde(rename = "LogDate")]
+    pub log_date: String,
+    /// Size of the CSV payload in bytes. Returned as a JSON number
+    /// (often a float in older API versions, integer in newer); we
+    /// store as `f64` to absorb both.
+    #[serde(rename = "LogFileLength", default)]
+    pub log_file_length: Option<f64>,
+    /// `"Hourly"` for hourly logs (orgs with the feature enabled),
+    /// otherwise typically absent. Filter on this when you only want
+    /// the hourly stream.
+    #[serde(rename = "Interval", default)]
+    pub interval: Option<String>,
+    /// Increment ordinal per hour bucket — `0` for daily files; `>= 1`
+    /// for hourly files within the same hour.
+    #[serde(rename = "Sequence", default)]
+    pub sequence: Option<i32>,
+    /// Timestamp the file became downloadable (drives incremental
+    /// ingestion). UTC, ISO-8601.
+    #[serde(rename = "CreatedDate", default)]
+    pub created_date: Option<String>,
+}
+
 /// One entry from `GET /services/data` — a Salesforce REST API version.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApiVersion {

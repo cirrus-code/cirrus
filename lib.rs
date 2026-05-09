@@ -56,6 +56,7 @@ pub use handlers::bulk::{BulkIngestSpec, BulkQuerySpec};
 pub use handlers::composite::{
     BatchRequest, BatchSubrequest, CompositeRequest, CompositeSubrequest,
 };
+pub use handlers::sobjects::BlobUploadSpec;
 pub use pagination::Records;
 pub use response::LimitInfo;
 pub use response::{
@@ -381,12 +382,8 @@ impl Cloudburst {
                         let headers = response.headers().clone();
                         self.update_limit_info(&headers);
 
-                        if retry::should_retry_status(
-                            &self.retry_policy,
-                            &method,
-                            status,
-                            attempt,
-                        ) {
+                        if retry::should_retry_status(&self.retry_policy, &method, status, attempt)
+                        {
                             // Drain the body so the connection returns
                             // to the pool clean.
                             let _ = response.bytes().await;
@@ -405,12 +402,7 @@ impl Cloudburst {
                     }
                     Err(e) => {
                         let err: CloudburstError = e.into();
-                        if retry::should_retry_network(
-                            &self.retry_policy,
-                            &method,
-                            &err,
-                            attempt,
-                        ) {
+                        if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
                             let delay = retry::compute_delay(&self.retry_policy, attempt, None);
                             tokio::time::sleep(delay).await;
                             attempt += 1;
@@ -424,9 +416,7 @@ impl Cloudburst {
             // 401 → invalidate the cached token and try once more with
             // a fresh one. If the auth session can't refresh (returns
             // the same token), surface the 401 verbatim.
-            if !auth_retried
-                && let Err(CloudburstError::Api { status: 401, .. }) = &result
-            {
+            if !auth_retried && let Err(CloudburstError::Api { status: 401, .. }) = &result {
                 self.auth.invalidate(&token_str).await;
                 let fresh = self.auth.access_token().await?;
                 if *fresh == token_str {
@@ -477,12 +467,8 @@ impl Cloudburst {
                         let headers = response.headers().clone();
                         self.update_limit_info(&headers);
 
-                        if retry::should_retry_status(
-                            &self.retry_policy,
-                            &method,
-                            status,
-                            attempt,
-                        ) {
+                        if retry::should_retry_status(&self.retry_policy, &method, status, attempt)
+                        {
                             let _ = response.bytes().await;
                             let retry_after = retry::parse_retry_after(&headers);
                             let delay =
@@ -499,12 +485,7 @@ impl Cloudburst {
                     }
                     Err(e) => {
                         let err: CloudburstError = e.into();
-                        if retry::should_retry_network(
-                            &self.retry_policy,
-                            &method,
-                            &err,
-                            attempt,
-                        ) {
+                        if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
                             let delay = retry::compute_delay(&self.retry_policy, attempt, None);
                             tokio::time::sleep(delay).await;
                             attempt += 1;
@@ -515,9 +496,123 @@ impl Cloudburst {
                 }
             };
 
-            if !auth_retried
-                && let Err(CloudburstError::Api { status: 401, .. }) = &result
-            {
+            if !auth_retried && let Err(CloudburstError::Api { status: 401, .. }) = &result {
+                self.auth.invalidate(&token_str).await;
+                let fresh = self.auth.access_token().await?;
+                if *fresh == token_str {
+                    return result;
+                }
+                auth_retried = true;
+                continue;
+            }
+            return result;
+        }
+    }
+
+    /// Sends a multipart/form-data request with one JSON metadata part
+    /// and one binary blob part.
+    ///
+    /// Used by sObject blob inserts/updates (ContentVersion / Document /
+    /// Attachment / any object with a blob field). Each retry iteration
+    /// rebuilds the [`reqwest::multipart::Form`] from the raw parts —
+    /// the form itself isn't Clone, but the underlying `Vec<u8>` JSON
+    /// and `bytes::Bytes` blob are cheap to clone.
+    ///
+    /// Path resolution follows [`Cloudburst::resolve_url`]'s three-mode
+    /// semantics. Goes through the same retry + auth-refresh +
+    /// `Sforce-Limit-Info` capture as the other send methods.
+    // Internal transport helper: the public surface
+    // ([`crate::handlers::sobjects::SObjectHandler::create_with_blob`])
+    // groups these into a [`crate::BlobUploadSpec`] struct. Keeping
+    // this fn positional avoids a second public-or-pub(crate) struct
+    // just for transport.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn send_multipart<R>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        json_part_name: &str,
+        json_bytes: Vec<u8>,
+        blob_part_name: &str,
+        blob_filename: &str,
+        blob_content_type: &str,
+        blob: bytes::Bytes,
+    ) -> CloudburstResult<R>
+    where
+        R: DeserializeOwned,
+    {
+        let url = self.resolve_url(path);
+        let mut auth_retried = false;
+        loop {
+            let token = self.auth.access_token().await?;
+            let token_str = token.to_string();
+            let mut attempt: u32 = 0;
+
+            let result: CloudburstResult<R> = loop {
+                // Build a fresh Form per attempt — Form isn't Clone.
+                // The Vec<u8> JSON clone is one alloc; the bytes::Bytes
+                // blob is Arc-backed (no copy).
+                let json_part = reqwest::multipart::Part::bytes(json_bytes.clone())
+                    .mime_str("application/json")
+                    .map_err(|e| {
+                        CloudburstError::InvalidHeader(format!(
+                            "invalid JSON part content-type: {e}"
+                        ))
+                    })?;
+                let blob_part = reqwest::multipart::Part::bytes(blob.to_vec())
+                    .file_name(blob_filename.to_string())
+                    .mime_str(blob_content_type)
+                    .map_err(|e| {
+                        CloudburstError::InvalidHeader(format!(
+                            "invalid blob part content-type: {e}"
+                        ))
+                    })?;
+                let form = reqwest::multipart::Form::new()
+                    .part(json_part_name.to_string(), json_part)
+                    .part(blob_part_name.to_string(), blob_part);
+
+                let request = self
+                    .client
+                    .request(method.clone(), &url)
+                    .bearer_auth(&token_str)
+                    .multipart(form);
+
+                match request.send().await {
+                    Ok(response) => {
+                        let status = response.status().as_u16();
+                        let headers = response.headers().clone();
+                        self.update_limit_info(&headers);
+
+                        if retry::should_retry_status(&self.retry_policy, &method, status, attempt)
+                        {
+                            let _ = response.bytes().await;
+                            let retry_after = retry::parse_retry_after(&headers);
+                            let delay =
+                                retry::compute_delay(&self.retry_policy, attempt, retry_after);
+                            tokio::time::sleep(delay).await;
+                            attempt += 1;
+                            continue;
+                        }
+
+                        match response.bytes().await {
+                            Ok(b) => break response::parse_response_bytes(status, &b),
+                            Err(e) => break Err(e.into()),
+                        }
+                    }
+                    Err(e) => {
+                        let err: CloudburstError = e.into();
+                        if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
+                            let delay = retry::compute_delay(&self.retry_policy, attempt, None);
+                            tokio::time::sleep(delay).await;
+                            attempt += 1;
+                            continue;
+                        }
+                        break Err(err);
+                    }
+                }
+            };
+
+            if !auth_retried && let Err(CloudburstError::Api { status: 401, .. }) = &result {
                 self.auth.invalidate(&token_str).await;
                 let fresh = self.auth.access_token().await?;
                 if *fresh == token_str {
@@ -567,12 +662,8 @@ impl Cloudburst {
                         let headers = response.headers().clone();
                         self.update_limit_info(&headers);
 
-                        if retry::should_retry_status(
-                            &self.retry_policy,
-                            &method,
-                            status,
-                            attempt,
-                        ) {
+                        if retry::should_retry_status(&self.retry_policy, &method, status, attempt)
+                        {
                             let _ = response.bytes().await;
                             let retry_after = retry::parse_retry_after(&headers);
                             let delay =
@@ -593,12 +684,7 @@ impl Cloudburst {
                     }
                     Err(e) => {
                         let err: CloudburstError = e.into();
-                        if retry::should_retry_network(
-                            &self.retry_policy,
-                            &method,
-                            &err,
-                            attempt,
-                        ) {
+                        if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
                             let delay = retry::compute_delay(&self.retry_policy, attempt, None);
                             tokio::time::sleep(delay).await;
                             attempt += 1;
@@ -609,9 +695,7 @@ impl Cloudburst {
                 }
             };
 
-            if !auth_retried
-                && let Err(CloudburstError::Api { status: 401, .. }) = &result
-            {
+            if !auth_retried && let Err(CloudburstError::Api { status: 401, .. }) = &result {
                 self.auth.invalidate(&token_str).await;
                 let fresh = self.auth.access_token().await?;
                 if *fresh == token_str {
@@ -1064,10 +1148,7 @@ mod tests {
 
             let sf = fixture_with_policy(server.uri(), fast_retry_policy());
             let err = sf.get::<Value>("limits").await.unwrap_err();
-            assert!(matches!(
-                err,
-                CloudburstError::Api { status: 404, .. }
-            ));
+            assert!(matches!(err, CloudburstError::Api { status: 404, .. }));
         }
 
         #[tokio::test]
@@ -1091,10 +1172,7 @@ mod tests {
                 .post::<Value, _>("sobjects/Account", &json!({"Name": "Acme"}))
                 .await
                 .unwrap_err();
-            assert!(matches!(
-                err,
-                CloudburstError::Api { status: 500, .. }
-            ));
+            assert!(matches!(err, CloudburstError::Api { status: 500, .. }));
         }
 
         #[tokio::test]
@@ -1131,10 +1209,7 @@ mod tests {
 
             let sf = fixture_with_policy(server.uri(), RetryPolicy::none());
             let err = sf.get::<Value>("limits").await.unwrap_err();
-            assert!(matches!(
-                err,
-                CloudburstError::Api { status: 429, .. }
-            ));
+            assert!(matches!(err, CloudburstError::Api { status: 429, .. }));
         }
 
         #[tokio::test]
@@ -1226,9 +1301,7 @@ mod tests {
 
             Mock::given(method("GET"))
                 .and(path("/services/data/v60.0/limits"))
-                .respond_with(
-                    ResponseTemplate::new(429).insert_header("Retry-After", "0"),
-                )
+                .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
                 .up_to_n_times(1)
                 .mount(&server)
                 .await;
@@ -1372,10 +1445,7 @@ mod tests {
             let sf = fixture(server.uri(), auth);
 
             let err = sf.get::<Value>("limits").await.unwrap_err();
-            assert!(matches!(
-                err,
-                CloudburstError::Api { status: 401, .. }
-            ));
+            assert!(matches!(err, CloudburstError::Api { status: 401, .. }));
         }
 
         #[tokio::test]
@@ -1399,10 +1469,7 @@ mod tests {
             let sf = fixture(server.uri(), auth);
 
             let err = sf.get::<Value>("limits").await.unwrap_err();
-            assert!(matches!(
-                err,
-                CloudburstError::Api { status: 401, .. }
-            ));
+            assert!(matches!(err, CloudburstError::Api { status: 401, .. }));
         }
 
         #[tokio::test]
@@ -1430,6 +1497,5 @@ mod tests {
             let inv = auth.invalidations.lock().unwrap();
             assert!(inv.is_empty());
         }
-
     }
 }

@@ -201,6 +201,180 @@ impl<'a> SObjectHandler<'a> {
             .send_at(reqwest::Method::PATCH, &url, None::<&()>, Some(body))
             .await
     }
+
+    /// Inserts a new record carrying binary blob data — `ContentVersion`,
+    /// `Document`, `Attachment`, or any sObject with a blob field.
+    ///
+    /// Sends a `multipart/form-data` request with the metadata as one
+    /// part and the binary as a second part. See [`BlobUploadSpec`] for
+    /// the per-object naming conventions Salesforce requires (the JSON
+    /// part name and the blob field name vary by sObject — and even by
+    /// operation; Document inserts use `entity_document` but updates
+    /// use `entity_content`).
+    ///
+    /// Calls
+    /// `POST /services/data/{api_version}/sobjects/{name}` with a
+    /// multipart body. Returns the standard [`SObjectCreateResult`].
+    ///
+    /// # File-size limits
+    ///
+    /// Per the [Insert or Update Blob Data] doc:
+    ///
+    /// - 2 GB for `ContentVersion`
+    /// - 500 MB for other standard objects with blob fields
+    ///
+    /// Non-multipart blob inserts (base64-encoded body field) are also
+    /// possible but capped at 37.5 MB and aren't worth a separate API
+    /// surface — use this method for any non-trivial upload.
+    ///
+    /// [Insert or Update Blob Data]: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/dome_sobject_insert_update_blob.htm
+    ///
+    /// # Example: ContentVersion upload
+    ///
+    /// ```ignore
+    /// use cloudburst_sdk::BlobUploadSpec;
+    /// use serde_json::json;
+    ///
+    /// let pdf: bytes::Bytes = std::fs::read("brochure.pdf").unwrap().into();
+    /// let result = sf.sobject("ContentVersion").create_with_blob(BlobUploadSpec {
+    ///     json_part_name: "entity_content",
+    ///     metadata: &json!({
+    ///         "Title": "Q1 Brochure",
+    ///         "PathOnClient": "brochure.pdf",
+    ///     }),
+    ///     blob_field_name: "VersionData",
+    ///     filename: "brochure.pdf",
+    ///     content_type: Some("application/pdf"),
+    ///     blob: pdf,
+    /// }).await?;
+    /// println!("created ContentVersion {}", result.id);
+    /// # Ok::<(), cloudburst_sdk::CloudburstError>(())
+    /// ```
+    pub async fn create_with_blob<B>(
+        &self,
+        spec: BlobUploadSpec<'_, B>,
+    ) -> CloudburstResult<SObjectCreateResult>
+    where
+        B: Serialize + ?Sized,
+    {
+        let path = format!("sobjects/{}", self.name);
+        let json_bytes = serde_json::to_vec(spec.metadata)
+            .map_err(crate::error::CloudburstError::Serialization)?;
+        let content_type = spec.content_type.unwrap_or("application/octet-stream");
+        self.client
+            .send_multipart(
+                reqwest::Method::POST,
+                &path,
+                spec.json_part_name,
+                json_bytes,
+                spec.blob_field_name,
+                spec.filename,
+                content_type,
+                spec.blob,
+            )
+            .await
+    }
+
+    /// Updates a record's blob field (and optionally non-binary fields)
+    /// via multipart `PATCH`.
+    ///
+    /// **Note:** `ContentVersion` does not support updates per the
+    /// Salesforce docs — only inserts. Use [`create_with_blob`] for new
+    /// versions. Other blob-field-bearing objects (Document, Attachment,
+    /// Knowledge articles) do support multipart update.
+    ///
+    /// Calls
+    /// `PATCH /services/data/{api_version}/sobjects/{name}/{id}` with
+    /// a multipart body. Salesforce returns 204 No Content on success.
+    ///
+    /// # Wire-shape gotcha
+    ///
+    /// Per the docs, the `json_part_name` for *updates* is
+    /// `entity_content` even when the object is `Document` (which
+    /// uses `entity_document` on insert). Caller specifies which name
+    /// to use; we don't try to derive it.
+    ///
+    /// [`create_with_blob`]: Self::create_with_blob
+    pub async fn update_with_blob<B>(
+        &self,
+        id: &str,
+        spec: BlobUploadSpec<'_, B>,
+    ) -> CloudburstResult<()>
+    where
+        B: Serialize + ?Sized,
+    {
+        let path = format!("sobjects/{}/{}", self.name, id);
+        let json_bytes = serde_json::to_vec(spec.metadata)
+            .map_err(crate::error::CloudburstError::Serialization)?;
+        let content_type = spec.content_type.unwrap_or("application/octet-stream");
+        self.client
+            .send_multipart(
+                reqwest::Method::PATCH,
+                &path,
+                spec.json_part_name,
+                json_bytes,
+                spec.blob_field_name,
+                spec.filename,
+                content_type,
+                spec.blob,
+            )
+            .await
+    }
+}
+
+/// Specification for a multipart blob upload via
+/// [`SObjectHandler::create_with_blob`] or
+/// [`SObjectHandler::update_with_blob`].
+///
+/// # Per-sObject naming conventions
+///
+/// Salesforce's blob upload format requires two specific part names
+/// that vary by sObject and operation. The docs document a few
+/// well-known combinations:
+///
+/// | sObject          | Operation | `json_part_name`    | `blob_field_name` |
+/// |------------------|-----------|---------------------|-------------------|
+/// | `ContentVersion` | insert    | `entity_content`    | `VersionData`     |
+/// | `Document`       | insert    | `entity_document`   | `Body`            |
+/// | `Document`       | update    | `entity_content`    | `Body`            |
+/// | `Attachment`     | insert    | `entity_attachment` | `Body`            |
+///
+/// (Note the inconsistency: Document insert vs update use different
+/// `json_part_name` values. This is per the docs, not a bug in this
+/// SDK.)
+///
+/// For other blob-bearing objects, consult the
+/// [Insert or Update Blob Data] doc — the convention is generally
+/// `entity_<lowercased-object>` for the JSON part and the
+/// blob-field's API name for the binary part, but always verify.
+///
+/// [Insert or Update Blob Data]: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/dome_sobject_insert_update_blob.htm
+#[derive(Debug)]
+pub struct BlobUploadSpec<'a, B: ?Sized> {
+    /// Name of the JSON metadata part. See the table on
+    /// [`BlobUploadSpec`] for known per-object values.
+    pub json_part_name: &'a str,
+    /// Non-binary record fields, serialized as JSON. Any
+    /// [`Serialize`] value works — typed structs,
+    /// `serde_json::json!({...})`, `HashMap<String, Value>`.
+    pub metadata: &'a B,
+    /// Name of the binary part — must match the sObject's blob field
+    /// API name. `Body` for Document/Attachment, `VersionData` for
+    /// ContentVersion.
+    pub blob_field_name: &'a str,
+    /// Filename to declare in the binary part's `Content-Disposition`.
+    /// Salesforce surfaces this as the `PathOnClient` / `Name` /
+    /// `FileName` attribute on most blob objects (varies; check the
+    /// object's documented field set).
+    pub filename: &'a str,
+    /// MIME type for the binary part. Defaults to
+    /// `application/octet-stream` when `None`. Setting it correctly
+    /// helps Salesforce correctly classify the upload (e.g.
+    /// `application/pdf` so previews render).
+    pub content_type: Option<&'a str>,
+    /// Binary payload. `bytes::Bytes` is Arc-backed and zero-copy
+    /// across retries.
+    pub blob: bytes::Bytes,
 }
 
 #[cfg(test)]
@@ -497,6 +671,173 @@ mod tests {
                 assert_eq!(errors[0].fields, vec!["Name".to_string()]);
             }
             other => panic!("expected Api error, got {other:?}"),
+        }
+    }
+
+    /// Multipart blob uploads. wiremock matchers can't structurally
+    /// parse multipart bodies (the boundary is randomized per request),
+    /// so these tests verify by header + body-substring matching:
+    /// `Content-Type` starts with `multipart/form-data`, and the body
+    /// contains the part-name + filename + JSON-snippet markers we
+    /// expect.
+    mod blob_upload {
+        use super::*;
+        use crate::BlobUploadSpec;
+        use wiremock::matchers::{body_string_contains, header_regex};
+
+        #[tokio::test]
+        async fn create_with_blob_posts_multipart_to_sobjects_endpoint() {
+            // Mirrors the documented ContentVersion insert: JSON part
+            // named entity_content, binary part named VersionData.
+            let server = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .and(path("/services/data/v60.0/sobjects/ContentVersion"))
+                .and(header("authorization", "Bearer tok"))
+                .and(header_regex(
+                    "content-type",
+                    r"^multipart/form-data; boundary=",
+                ))
+                .and(body_string_contains(r#"name="entity_content""#))
+                .and(body_string_contains(r#"name="VersionData""#))
+                .and(body_string_contains(r#"filename="brochure.pdf""#))
+                .and(body_string_contains(r#""PathOnClient":"brochure.pdf""#))
+                .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                    "id": "068D00000000pgOIAQ",
+                    "errors": [],
+                    "success": true
+                })))
+                .mount(&server)
+                .await;
+
+            let sf = fixture(server.uri());
+            let pdf = bytes::Bytes::from_static(b"%PDF-1.4 fake pdf bytes\n");
+            let result = sf
+                .sobject("ContentVersion")
+                .create_with_blob(BlobUploadSpec {
+                    json_part_name: "entity_content",
+                    metadata: &json!({
+                        "Title": "Q1 Brochure",
+                        "PathOnClient": "brochure.pdf",
+                    }),
+                    blob_field_name: "VersionData",
+                    filename: "brochure.pdf",
+                    content_type: Some("application/pdf"),
+                    blob: pdf,
+                })
+                .await
+                .unwrap();
+            assert_eq!(result.id, "068D00000000pgOIAQ");
+            assert!(result.success);
+        }
+
+        #[tokio::test]
+        async fn create_with_blob_defaults_content_type_to_octet_stream() {
+            // When `content_type: None`, the binary part should
+            // declare application/octet-stream.
+            let server = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .and(path("/services/data/v60.0/sobjects/Document"))
+                .and(body_string_contains("application/octet-stream"))
+                .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                    "id": "015D000000000",
+                    "errors": [],
+                    "success": true
+                })))
+                .mount(&server)
+                .await;
+
+            let sf = fixture(server.uri());
+            sf.sobject("Document")
+                .create_with_blob(BlobUploadSpec {
+                    json_part_name: "entity_document",
+                    metadata: &json!({"Name": "test", "FolderId": "005xx", "Type": "pdf"}),
+                    blob_field_name: "Body",
+                    filename: "x.pdf",
+                    content_type: None,
+                    blob: bytes::Bytes::from_static(b"fake"),
+                })
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn create_with_blob_surfaces_salesforce_error_array() {
+            let server = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .and(path("/services/data/v60.0/sobjects/Document"))
+                .respond_with(ResponseTemplate::new(400).set_body_json(json!([{
+                    "fields": ["FolderId"],
+                    "message": "Folder ID: id value of incorrect type",
+                    "errorCode": "MALFORMED_ID"
+                }])))
+                .mount(&server)
+                .await;
+
+            let sf = fixture(server.uri());
+            let err = sf
+                .sobject("Document")
+                .create_with_blob(BlobUploadSpec {
+                    json_part_name: "entity_document",
+                    metadata: &json!({"Name": "x", "FolderId": "bad", "Type": "pdf"}),
+                    blob_field_name: "Body",
+                    filename: "x.pdf",
+                    content_type: Some("application/pdf"),
+                    blob: bytes::Bytes::from_static(b"x"),
+                })
+                .await
+                .unwrap_err();
+            match err {
+                crate::CloudburstError::Api { status, errors, .. } => {
+                    assert_eq!(status, 400);
+                    assert_eq!(errors[0].error_code, "MALFORMED_ID");
+                    assert_eq!(errors[0].fields, vec!["FolderId".to_string()]);
+                }
+                other => panic!("expected Api error, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn update_with_blob_uses_patch_and_targets_record_id_path() {
+            let server = MockServer::start().await;
+
+            // Document update example from the docs uses the
+            // `entity_content` JSON part name (not entity_document) on
+            // PATCH — verifying that quirk passes through.
+            Mock::given(method("PATCH"))
+                .and(path("/services/data/v60.0/sobjects/Document/015D000000000"))
+                .and(header_regex(
+                    "content-type",
+                    r"^multipart/form-data; boundary=",
+                ))
+                .and(body_string_contains(r#"name="entity_content""#))
+                .and(body_string_contains(r#"name="Body""#))
+                .respond_with(ResponseTemplate::new(204))
+                .mount(&server)
+                .await;
+
+            let sf = fixture(server.uri());
+            sf.sobject("Document")
+                .update_with_blob(
+                    "015D000000000",
+                    BlobUploadSpec {
+                        // Note: even though this is a Document update,
+                        // the doc shows the JSON part name as
+                        // `entity_content`, not `entity_document`.
+                        // That's a Salesforce wire-shape quirk — the
+                        // SDK doesn't try to derive it.
+                        json_part_name: "entity_content",
+                        metadata: &json!({"Name": "Updated"}),
+                        blob_field_name: "Body",
+                        filename: "updated.pdf",
+                        content_type: Some("application/pdf"),
+                        blob: bytes::Bytes::from_static(b"%PDF updated"),
+                    },
+                )
+                .await
+                .unwrap();
         }
     }
 }

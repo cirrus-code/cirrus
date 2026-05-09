@@ -7,8 +7,8 @@
 - Auth flows: 5/5 priority flows shipped (JWT, Refresh, Client Credentials, Web Server PKCE, Token Exchange).
 - API surface: Phase 1 + entire composite family + Bulk 2.0 + Apex REST + Tooling API + Event Monitoring shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=, =composite/sobjects=, =composite=, =bulk().ingest()=, =bulk().query()=, =apex().{get,post,put,patch,delete}=, =tooling().{describe_global,sobject().*,query,search,execute_anonymous}=, =event_monitoring().{download,download_url}= + =EventLogFileRecord=.
 - Open-ended client escape hatch shipped: =get= / =get_with_query= / =post= / =put= / =patch= / =delete= / =request_builder= / =execute= on =Cloudburst= with three-mode path resolution.
-- Raw-body transport helpers shipped (=send_with_body= for CSV uploads, =fetch_raw= for CSV downloads with pagination headers). =parse_error_response= extracted from =parse_response_bytes= to share error-array parsing across both transport paths.
-- Test count baseline: 252 unit + 2 doctest, all passing; clippy clean.
+- Raw-body transport helpers shipped (=send_with_body= for CSV uploads, =fetch_raw= for CSV downloads with pagination headers, =send_multipart= for binary blob uploads via =sobject().create_with_blob= / =update_with_blob=). =parse_error_response= extracted from =parse_response_bytes= to share error-array parsing across all transport paths.
+- Test count baseline: 256 unit + 2 doctest, all passing; clippy clean.
 
 * Design principle: open-ended client (octocrab-style escape hatch)
 :PROPERTIES:
@@ -196,10 +196,17 @@ either typed JSON or =serde_json::Value=.
 ** TODO UI API =/ui-api/...= — record / record-defaults / picklist-values
 ** TODO GraphQL =/services/data/vXX.X/graphql= — single endpoint, schema-driven
 
-* Phase 4 — Niche / specialized [0/10]
+* Phase 4 — Niche / specialized [1/10]
 ** TODO Async query =/async-queries=
 ** TODO Knowledge =/knowledgeManagement= and =/support/knowledgeArticles=
-** TODO Files / ContentVersion uploads — multipart, the only place we need new transport
+** DONE Files / ContentVersion uploads — multipart blob inserts/updates
+- =SObjectHandler::create_with_blob= (POST) and =update_with_blob= (PATCH) on the existing per-object handler. Public =BlobUploadSpec<'a, B>= struct (re-exported at crate root) carries the per-operation params: =json_part_name=, =metadata=, =blob_field_name=, =filename=, =content_type=, =blob=.
+- New internal transport helper =Cloudburst::send_multipart= — sibling to =send_with_body= / =fetch_raw=. Wraps =reqwest::multipart::Form= with full retry + auth-refresh + =Sforce-Limit-Info= capture. Each retry rebuilds the form from raw parts (Form isn't Clone) — JSON is held as =Vec<u8>= and the blob as =bytes::Bytes= (Arc-backed, zero-copy).
+- *Per-operation part naming.* Salesforce's blob-upload format requires two part names that vary per object *and* per operation. Documented quirks (per the canonical [[https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/dome_sobject_insert_update_blob.htm][Insert or Update Blob Data]] page): ContentVersion insert uses =entity_content= + =VersionData=; Document insert uses =entity_document= + =Body=; Document *update* uses =entity_content= + =Body= (yes, the JSON part name flips between insert and update for the same object). Caller specifies; SDK doesn't try to derive.
+- *File-size limits* (from docs): 2 GB for ContentVersion, 500 MB for other standard objects with blob fields. Documented on the create_with_blob method.
+- =reqwest= multipart feature added to existing dep.
+- 4 wiremock tests covering: ContentVersion insert (JSON metadata + binary parts both verified via header-regex + body-substring matching), default content-type fallback to =application/octet-stream=, error-array surfacing on 400, Document update via PATCH with the documented =entity_content= part-name quirk.
+- *Deferred:* sObject Collections multipart blob inserts (the =/composite/sobjects= variant with =binaryPartName= / =binaryPartNameAlias= attributes). Doable on top of the existing transport but adds a separate API surface — wait until usage demands.
 ** TODO Streaming attachments / blob bodies — =/sobjects/{SObject}/{id}/{Field}=
 ** TODO Embedded Service / chat
 ** TODO Einstein, prediction services

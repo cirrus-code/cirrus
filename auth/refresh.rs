@@ -90,6 +90,12 @@ impl RefreshTokenAuth {
     }
 
     async fn mint_token(&self) -> CloudburstResult<CachedToken> {
+        tracing::info!(
+            target: "cloudburst::auth",
+            flow = "refresh-token",
+            login_url = %self.login_url,
+            "minting fresh access token",
+        );
         // Compose the form body. consumer_secret is conditional on whether
         // the connected app is confidential.
         let mut body: Vec<(&str, &str)> = vec![
@@ -150,7 +156,18 @@ impl AuthSession for RefreshTokenAuth {
         if let Some(cached) = guard.as_ref()
             && cached.access_token == stale_token
         {
+            tracing::debug!(
+                target: "cloudburst::auth",
+                flow = "refresh-token",
+                "invalidating cached token (CAS matched)",
+            );
             *guard = None;
+        } else {
+            tracing::trace!(
+                target: "cloudburst::auth",
+                flow = "refresh-token",
+                "invalidate called but cached token differs (concurrent refresh?); no-op",
+            );
         }
     }
 }

@@ -170,7 +170,15 @@ pub(crate) fn compute_delay(
     retry_after: Option<Duration>,
 ) -> Duration {
     if let Some(hint) = retry_after {
-        return hint.min(policy.max_delay);
+        let capped = hint.min(policy.max_delay);
+        tracing::warn!(
+            target: "cloudburst::retry",
+            attempt = attempt + 1,
+            delay_ms = capped.as_millis() as u64,
+            source = "retry-after-header",
+            "scheduling request retry",
+        );
+        return capped;
     }
     // base_delay * 2^attempt, in milliseconds, saturating on overflow.
     let factor: u128 = 1u128.checked_shl(attempt).unwrap_or(u128::MAX);
@@ -180,21 +188,31 @@ pub(crate) fn compute_delay(
     let capped_ms = computed_ms.min(max_ms);
     let computed = Duration::from_millis(capped_ms.min(u64::MAX as u128) as u64);
 
-    if !policy.jitter {
-        return computed;
-    }
-
-    let max_ms = computed.as_millis() as u64;
-    if max_ms == 0 {
-        return Duration::ZERO;
-    }
-    let mut buf = [0u8; 8];
-    if getrandom::fill(&mut buf).is_err() {
-        // Random source down — degrade gracefully to deterministic.
-        return computed;
-    }
-    let r = u64::from_le_bytes(buf) % (max_ms + 1);
-    Duration::from_millis(r)
+    let final_delay = if !policy.jitter {
+        computed
+    } else {
+        let max_ms = computed.as_millis() as u64;
+        if max_ms == 0 {
+            Duration::ZERO
+        } else {
+            let mut buf = [0u8; 8];
+            if getrandom::fill(&mut buf).is_err() {
+                // Random source down — degrade gracefully to deterministic.
+                computed
+            } else {
+                let r = u64::from_le_bytes(buf) % (max_ms + 1);
+                Duration::from_millis(r)
+            }
+        }
+    };
+    tracing::warn!(
+        target: "cloudburst::retry",
+        attempt = attempt + 1,
+        delay_ms = final_delay.as_millis() as u64,
+        source = "exponential-backoff",
+        "scheduling request retry",
+    );
+    final_delay
 }
 
 #[cfg(test)]

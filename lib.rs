@@ -166,6 +166,12 @@ impl Cloudburst {
         let Some(info) = LimitInfo::parse(s) else {
             return;
         };
+        tracing::debug!(
+            target: "cloudburst::limit_info",
+            used = info.used,
+            allowed = info.allowed,
+            "captured Sforce-Limit-Info",
+        );
         // Silently ignore poison — this is a best-effort stat surface,
         // not load-bearing for any operation.
         if let Ok(mut guard) = self.last_limit_info.write() {
@@ -417,9 +423,17 @@ impl Cloudburst {
             // a fresh one. If the auth session can't refresh (returns
             // the same token), surface the 401 verbatim.
             if !auth_retried && let Err(CloudburstError::Api { status: 401, .. }) = &result {
+                tracing::warn!(
+                    target: "cloudburst::auth",
+                    "received 401; invalidating cached token and retrying once",
+                );
                 self.auth.invalidate(&token_str).await;
                 let fresh = self.auth.access_token().await?;
                 if *fresh == token_str {
+                    tracing::warn!(
+                        target: "cloudburst::auth",
+                        "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
+                    );
                     return result;
                 }
                 auth_retried = true;
@@ -497,9 +511,17 @@ impl Cloudburst {
             };
 
             if !auth_retried && let Err(CloudburstError::Api { status: 401, .. }) = &result {
+                tracing::warn!(
+                    target: "cloudburst::auth",
+                    "received 401; invalidating cached token and retrying once",
+                );
                 self.auth.invalidate(&token_str).await;
                 let fresh = self.auth.access_token().await?;
                 if *fresh == token_str {
+                    tracing::warn!(
+                        target: "cloudburst::auth",
+                        "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
+                    );
                     return result;
                 }
                 auth_retried = true;
@@ -550,8 +572,12 @@ impl Cloudburst {
 
             let result: CloudburstResult<R> = loop {
                 // Build a fresh Form per attempt — Form isn't Clone.
-                // The Vec<u8> JSON clone is one alloc; the bytes::Bytes
-                // blob is Arc-backed (no copy).
+                // The Vec<u8> JSON clone is one alloc (typically <1KB
+                // metadata). The blob goes through Part::stream so that
+                // its underlying Arc-backed bytes::Bytes is forwarded
+                // zero-copy — Part::bytes would force a to_vec() and
+                // copy up to 2GB for ContentVersion uploads on each
+                // retry attempt.
                 let json_part = reqwest::multipart::Part::bytes(json_bytes.clone())
                     .mime_str("application/json")
                     .map_err(|e| {
@@ -559,7 +585,7 @@ impl Cloudburst {
                             "invalid JSON part content-type: {e}"
                         ))
                     })?;
-                let blob_part = reqwest::multipart::Part::bytes(blob.to_vec())
+                let blob_part = reqwest::multipart::Part::stream(reqwest::Body::from(blob.clone()))
                     .file_name(blob_filename.to_string())
                     .mime_str(blob_content_type)
                     .map_err(|e| {
@@ -613,9 +639,17 @@ impl Cloudburst {
             };
 
             if !auth_retried && let Err(CloudburstError::Api { status: 401, .. }) = &result {
+                tracing::warn!(
+                    target: "cloudburst::auth",
+                    "received 401; invalidating cached token and retrying once",
+                );
                 self.auth.invalidate(&token_str).await;
                 let fresh = self.auth.access_token().await?;
                 if *fresh == token_str {
+                    tracing::warn!(
+                        target: "cloudburst::auth",
+                        "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
+                    );
                     return result;
                 }
                 auth_retried = true;
@@ -696,9 +730,116 @@ impl Cloudburst {
             };
 
             if !auth_retried && let Err(CloudburstError::Api { status: 401, .. }) = &result {
+                tracing::warn!(
+                    target: "cloudburst::auth",
+                    "received 401; invalidating cached token and retrying once",
+                );
                 self.auth.invalidate(&token_str).await;
                 let fresh = self.auth.access_token().await?;
                 if *fresh == token_str {
+                    tracing::warn!(
+                        target: "cloudburst::auth",
+                        "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
+                    );
+                    return result;
+                }
+                auth_retried = true;
+                continue;
+            }
+            return result;
+        }
+    }
+
+    /// Sends a GET with arbitrary extra headers, returning the
+    /// `(status, body_bytes)` tuple verbatim. Used for conditional
+    /// requests where the caller needs to dispatch on a specific
+    /// status (e.g., `304 Not Modified` for `If-Modified-Since`).
+    ///
+    /// Goes through the same retry policy, auth-refresh, and
+    /// `Sforce-Limit-Info` capture as the other send paths.
+    /// **Treats both 2xx and 304 as success** — they're returned as
+    /// `Ok((status, bytes))` for the caller to dispatch. Other non-2xx
+    /// statuses go through the normal error parsing.
+    pub(crate) async fn send_with_headers(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        query: Option<&[(&str, &str)]>,
+        extra_headers: &[(&str, &str)],
+    ) -> CloudburstResult<(u16, bytes::Bytes)> {
+        let url = self.resolve_url(path);
+        let mut auth_retried = false;
+        loop {
+            let token = self.auth.access_token().await?;
+            let token_str = token.to_string();
+            let mut attempt: u32 = 0;
+
+            let result: CloudburstResult<(u16, bytes::Bytes)> = loop {
+                let mut request = self
+                    .client
+                    .request(method.clone(), &url)
+                    .bearer_auth(&token_str);
+                for (name, value) in extra_headers {
+                    request = request.header(*name, *value);
+                }
+                if let Some(q) = query {
+                    request = request.query(q);
+                }
+
+                match request.send().await {
+                    Ok(response) => {
+                        let status = response.status().as_u16();
+                        let headers = response.headers().clone();
+                        self.update_limit_info(&headers);
+
+                        if retry::should_retry_status(&self.retry_policy, &method, status, attempt)
+                        {
+                            let _ = response.bytes().await;
+                            let retry_after = retry::parse_retry_after(&headers);
+                            let delay =
+                                retry::compute_delay(&self.retry_policy, attempt, retry_after);
+                            tokio::time::sleep(delay).await;
+                            attempt += 1;
+                            continue;
+                        }
+
+                        let bytes = match response.bytes().await {
+                            Ok(b) => b,
+                            Err(e) => break Err(e.into()),
+                        };
+                        // 304 is "use your cache" — not an error from
+                        // the conditional-request perspective. 2xx is
+                        // success. Other non-2xx → error.
+                        if (200..300).contains(&status) || status == 304 {
+                            break Ok((status, bytes));
+                        }
+                        break Err(response::parse_error_response(status, &bytes));
+                    }
+                    Err(e) => {
+                        let err: CloudburstError = e.into();
+                        if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
+                            let delay = retry::compute_delay(&self.retry_policy, attempt, None);
+                            tokio::time::sleep(delay).await;
+                            attempt += 1;
+                            continue;
+                        }
+                        break Err(err);
+                    }
+                }
+            };
+
+            if !auth_retried && let Err(CloudburstError::Api { status: 401, .. }) = &result {
+                tracing::warn!(
+                    target: "cloudburst::auth",
+                    "received 401; invalidating cached token and retrying once",
+                );
+                self.auth.invalidate(&token_str).await;
+                let fresh = self.auth.access_token().await?;
+                if *fresh == token_str {
+                    tracing::warn!(
+                        target: "cloudburst::auth",
+                        "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
+                    );
                     return result;
                 }
                 auth_retried = true;
@@ -790,6 +931,47 @@ impl CloudburstBuilder {
                 .unwrap_or_else(|| DEFAULT_API_VERSION.to_string()),
             retry_policy: self.retry_policy.unwrap_or_default(),
             last_limit_info: Arc::new(RwLock::new(None)),
+        })
+    }
+
+    /// Builds a client and immediately discovers the highest API
+    /// version the org supports via `GET /services/data`, replacing
+    /// the configured `api_version` with the discovered value.
+    ///
+    /// Useful when you don't want to lock into [`DEFAULT_API_VERSION`]
+    /// at SDK release time — newer Salesforce releases (e.g. Spring
+    /// '26 → v66.0) add fields and endpoints that won't be visible if
+    /// you keep talking to an older version. Costs one extra
+    /// `GET /services/data` round-trip on client construction.
+    ///
+    /// The bootstrap call uses [`DEFAULT_API_VERSION`], but
+    /// `/services/data` is *unversioned*, so the choice doesn't
+    /// affect the lookup — it only matters for path resolution which
+    /// is bypassed for this absolute-path call.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// use std::sync::Arc;
+    ///
+    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// let auth = Arc::new(StaticTokenAuth::new("tok", "https://my-org.my.salesforce.com"));
+    /// let sf = Cloudburst::builder()
+    ///     .auth(auth)
+    ///     .build_with_latest_version()
+    ///     .await?;
+    /// // sf.api_version() now returns "v66.0" (or whatever the org's
+    /// // highest is) rather than the SDK's compile-time default.
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn build_with_latest_version(self) -> CloudburstResult<Cloudburst> {
+        let bootstrap = self.build()?;
+        let latest = bootstrap.latest_api_version().await?;
+        Ok(Cloudburst {
+            api_version: latest,
+            ..bootstrap
         })
     }
 }

@@ -484,6 +484,29 @@ pub struct ApiVersion {
     pub version: String,
 }
 
+impl ApiVersion {
+    /// Parses [`version`](Self::version) into a numeric `(major, minor)`
+    /// tuple suitable for ordering. Returns `None` if the string is
+    /// malformed.
+    ///
+    /// Lexical comparison of the raw string is **wrong** for version
+    /// ordering: `"9.0"` sorts greater than `"60.0"` lexically. Use
+    /// this for any sorting/comparison.
+    pub fn version_number(&self) -> Option<(u32, u32)> {
+        let (major, minor) = self.version.split_once('.')?;
+        Some((major.parse().ok()?, minor.parse().ok()?))
+    }
+
+    /// Returns the highest-numbered [`ApiVersion`] in `versions`,
+    /// comparing by `(major, minor)` rather than lexically. Versions
+    /// that fail to parse compare as the smallest.
+    ///
+    /// Returns `None` if the slice is empty.
+    pub fn latest(versions: &[Self]) -> Option<&Self> {
+        versions.iter().max_by_key(|v| v.version_number())
+    }
+}
+
 /// Top-level response from `POST /composite/batch`.
 ///
 /// Salesforce always returns HTTP 200 for a well-formed batch even when

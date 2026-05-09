@@ -79,6 +79,12 @@ impl ClientCredentialsAuth {
     }
 
     async fn mint_token(&self) -> CloudburstResult<CachedToken> {
+        tracing::info!(
+            target: "cloudburst::auth",
+            flow = "client-credentials",
+            login_url = %self.login_url,
+            "minting fresh access token",
+        );
         let body = [
             ("grant_type", "client_credentials"),
             ("client_id", self.consumer_key.as_str()),
@@ -133,7 +139,18 @@ impl AuthSession for ClientCredentialsAuth {
         if let Some(cached) = guard.as_ref()
             && cached.access_token == stale_token
         {
+            tracing::debug!(
+                target: "cloudburst::auth",
+                flow = "client-credentials",
+                "invalidating cached token (CAS matched)",
+            );
             *guard = None;
+        } else {
+            tracing::trace!(
+                target: "cloudburst::auth",
+                flow = "client-credentials",
+                "invalidate called but cached token differs (concurrent refresh?); no-op",
+            );
         }
     }
 }

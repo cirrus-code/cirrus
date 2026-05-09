@@ -16,11 +16,12 @@
 //! [`Cloudburst::sobject`]: crate::Cloudburst::sobject
 
 use crate::Cloudburst;
-use crate::error::CloudburstResult;
+use crate::error::{CloudburstError, CloudburstResult};
 use crate::response::{DescribeGlobal, SObjectCreateResult};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::time::SystemTime;
 
 impl Cloudburst {
     /// Returns a handler for collection-level sObject operations
@@ -48,6 +49,42 @@ impl SObjectsHandler<'_> {
     /// Calls `GET /services/data/{api_version}/sobjects/`.
     pub async fn describe_global(&self) -> CloudburstResult<DescribeGlobal> {
         self.client.get("sobjects").await
+    }
+
+    /// Conditional describe-global — returns `Some(metadata)` if the
+    /// describe-global response has changed since `since`, or `None`
+    /// if the org returns `304 Not Modified`.
+    ///
+    /// Salesforce documents this header on the describe-global
+    /// endpoint specifically — it tracks both per-object metadata
+    /// changes *and* org-wide events (permissions, profiles, field
+    /// labels). The 304 path lets you keep your cached
+    /// [`DescribeGlobal`] without re-deserializing a multi-megabyte
+    /// response.
+    ///
+    /// `since` is formatted as RFC 7231 IMF-fixdate (e.g.
+    /// `"Wed, 21 Oct 2015 07:28:00 GMT"`) via the `httpdate` crate
+    /// before being sent.
+    pub async fn describe_global_if_modified_since(
+        &self,
+        since: SystemTime,
+    ) -> CloudburstResult<Option<DescribeGlobal>> {
+        let date = httpdate::fmt_http_date(since);
+        let (status, bytes) = self
+            .client
+            .send_with_headers(
+                reqwest::Method::GET,
+                "sobjects",
+                None,
+                &[("If-Modified-Since", &date)],
+            )
+            .await?;
+        if status == 304 {
+            return Ok(None);
+        }
+        Ok(Some(
+            serde_json::from_slice(&bytes).map_err(CloudburstError::Serialization)?,
+        ))
     }
 }
 
@@ -81,6 +118,55 @@ impl<'a> SObjectHandler<'a> {
         self.client
             .send_at(reqwest::Method::GET, &url, None::<&()>, None::<&()>)
             .await
+    }
+
+    /// Conditional per-object describe — returns `Some(metadata)` if
+    /// changed since `since`, or `None` on `304 Not Modified`.
+    ///
+    /// Same caching workflow as
+    /// [`SObjectsHandler::describe_global_if_modified_since`]:
+    /// pass the timestamp of your last fetch; Salesforce returns 304
+    /// (and you can keep your cached metadata) when nothing has
+    /// changed.
+    pub async fn describe_if_modified_since(
+        &self,
+        since: SystemTime,
+    ) -> CloudburstResult<Option<Value>> {
+        self.describe_if_modified_since_as(since).await
+    }
+
+    /// Typed variant of
+    /// [`describe_if_modified_since`](Self::describe_if_modified_since).
+    pub async fn describe_if_modified_since_as<R: DeserializeOwned>(
+        &self,
+        since: SystemTime,
+    ) -> CloudburstResult<Option<R>> {
+        // versioned_segments produces a fully-resolved instance URL.
+        // send_with_headers takes a path that goes through
+        // resolve_url; pass the absolute URL through the leading-`/`
+        // / fully-qualified branches by stripping the instance prefix
+        // — no, simpler: use resolve_url's three-mode dispatch on the
+        // pre-built URL, which it'll route through passthrough mode
+        // when the URL starts with http(s)://.
+        let url = self
+            .client
+            .versioned_segments(&["sobjects", self.name, "describe"])?;
+        let date = httpdate::fmt_http_date(since);
+        let (status, bytes) = self
+            .client
+            .send_with_headers(
+                reqwest::Method::GET,
+                &url,
+                None,
+                &[("If-Modified-Since", &date)],
+            )
+            .await?;
+        if status == 304 {
+            return Ok(None);
+        }
+        Ok(Some(
+            serde_json::from_slice(&bytes).map_err(CloudburstError::Serialization)?,
+        ))
     }
 
     /// Retrieves a record by ID, returning every field. For a subset of
@@ -680,6 +766,157 @@ mod tests {
     /// `Content-Type` starts with `multipart/form-data`, and the body
     /// contains the part-name + filename + JSON-snippet markers we
     /// expect.
+    mod conditional {
+        use super::*;
+        use std::time::{Duration, SystemTime};
+        use wiremock::matchers::header_regex;
+
+        #[tokio::test]
+        async fn describe_global_if_modified_since_returns_some_on_200() {
+            let server = MockServer::start().await;
+
+            // Hits the same /sobjects path as plain describe_global,
+            // but the request must carry an If-Modified-Since header
+            // formatted as RFC 7231 IMF-fixdate (e.g. "Wed, 21 Oct
+            // 2015 07:28:00 GMT" — the comma + space is the giveaway).
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/sobjects"))
+                .and(header_regex(
+                    "if-modified-since",
+                    r"^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$",
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "encoding": "UTF-8",
+                    "maxBatchSize": 200,
+                    "sobjects": [{
+                        "activateable": false, "custom": false, "customSetting": false,
+                        "createable": true, "deletable": true, "deprecatedAndHidden": false,
+                        "feedEnabled": true, "keyPrefix": "001",
+                        "label": "Account", "labelPlural": "Accounts",
+                        "layoutable": true, "mergeable": true, "mruEnabled": true,
+                        "name": "Account", "queryable": true, "replicateable": true,
+                        "retrieveable": true, "searchable": true, "triggerable": true,
+                        "undeletable": true, "updateable": true,
+                        "urls": {}
+                    }]
+                })))
+                .mount(&server)
+                .await;
+
+            let sf = fixture(server.uri());
+            let yesterday = SystemTime::now() - Duration::from_secs(86_400);
+            let result = sf
+                .sobjects()
+                .describe_global_if_modified_since(yesterday)
+                .await
+                .unwrap();
+            let dg = result.expect("expected Some(DescribeGlobal) on 200");
+            assert_eq!(dg.encoding, "UTF-8");
+            assert_eq!(dg.sobjects[0].name, "Account");
+        }
+
+        #[tokio::test]
+        async fn describe_global_if_modified_since_returns_none_on_304() {
+            let server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/sobjects"))
+                .and(header_regex("if-modified-since", r"GMT$"))
+                .respond_with(ResponseTemplate::new(304))
+                .mount(&server)
+                .await;
+
+            let sf = fixture(server.uri());
+            let yesterday = SystemTime::now() - Duration::from_secs(86_400);
+            let result = sf
+                .sobjects()
+                .describe_global_if_modified_since(yesterday)
+                .await
+                .unwrap();
+            assert!(result.is_none(), "expected None on 304");
+        }
+
+        #[tokio::test]
+        async fn describe_per_object_if_modified_since_returns_typed_some() {
+            #[derive(serde::Deserialize)]
+            struct DescribeSubset {
+                name: String,
+                custom: bool,
+            }
+
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(
+                    "/services/data/v60.0/sobjects/Account/describe",
+                ))
+                .and(header_regex("if-modified-since", r"GMT$"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "name": "Account",
+                    "custom": false,
+                    "fields": []
+                })))
+                .mount(&server)
+                .await;
+
+            let sf = fixture(server.uri());
+            let result: Option<DescribeSubset> = sf
+                .sobject("Account")
+                .describe_if_modified_since_as(SystemTime::now())
+                .await
+                .unwrap();
+            let d = result.unwrap();
+            assert_eq!(d.name, "Account");
+            assert!(!d.custom);
+        }
+
+        #[tokio::test]
+        async fn describe_per_object_if_modified_since_none_on_304() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(
+                    "/services/data/v60.0/sobjects/Account/describe",
+                ))
+                .respond_with(ResponseTemplate::new(304))
+                .mount(&server)
+                .await;
+
+            let sf = fixture(server.uri());
+            let result = sf
+                .sobject("Account")
+                .describe_if_modified_since(SystemTime::now())
+                .await
+                .unwrap();
+            assert!(result.is_none());
+        }
+
+        #[tokio::test]
+        async fn conditional_describe_surfaces_other_4xx_as_error() {
+            // 401/403/etc. should NOT become Ok(None) — that special
+            // case is reserved for 304. Other non-2xx flow through
+            // the standard error-array parsing.
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/sobjects"))
+                .respond_with(ResponseTemplate::new(403).set_body_json(json!([{
+                    "errorCode": "INSUFFICIENT_ACCESS",
+                    "message": "no permission"
+                }])))
+                .mount(&server)
+                .await;
+
+            let sf = fixture(server.uri());
+            let err = sf
+                .sobjects()
+                .describe_global_if_modified_since(SystemTime::now())
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                crate::CloudburstError::Api { status: 403, .. }
+            ));
+        }
+    }
+
     mod blob_upload {
         use super::*;
         use crate::BlobUploadSpec;

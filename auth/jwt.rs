@@ -100,6 +100,12 @@ impl JwtAuth {
     }
 
     async fn mint_token(&self) -> CloudburstResult<CachedToken> {
+        tracing::info!(
+            target: "cloudburst::auth",
+            flow = "jwt-bearer",
+            login_url = %self.login_url,
+            "minting fresh access token",
+        );
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -169,7 +175,18 @@ impl AuthSession for JwtAuth {
         if let Some(cached) = guard.as_ref()
             && cached.access_token == stale_token
         {
+            tracing::debug!(
+                target: "cloudburst::auth",
+                flow = "jwt-bearer",
+                "invalidating cached token (CAS matched)",
+            );
             *guard = None;
+        } else {
+            tracing::trace!(
+                target: "cloudburst::auth",
+                flow = "jwt-bearer",
+                "invalidate called but cached token differs (concurrent refresh?); no-op",
+            );
         }
     }
 }

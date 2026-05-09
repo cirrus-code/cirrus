@@ -6,7 +6,7 @@
 //! versioned `/services/data/{version}` tree.
 
 use crate::Cloudburst;
-use crate::error::CloudburstResult;
+use crate::error::{CloudburstError, CloudburstResult};
 use crate::response::ApiVersion;
 
 impl Cloudburst {
@@ -18,6 +18,31 @@ impl Cloudburst {
     /// [`CloudburstBuilder::api_version`]: crate::CloudburstBuilder::api_version
     pub async fn versions(&self) -> CloudburstResult<Vec<ApiVersion>> {
         self.get("/services/data").await
+    }
+
+    /// Fetches the version list and returns the highest available
+    /// version as a `vNN.N` string suitable for
+    /// [`CloudburstBuilder::api_version`] (i.e., with the `v` prefix
+    /// the rest of the SDK expects).
+    ///
+    /// Comparison is numeric — sorted by `(major, minor)`, not
+    /// lexically. Errors if the org returns no parseable versions
+    /// (shouldn't happen for a real Salesforce org).
+    ///
+    /// For one-shot bootstrapping at client-construction time, prefer
+    /// [`CloudburstBuilder::build_with_latest_version`] which combines
+    /// these two steps.
+    ///
+    /// [`CloudburstBuilder::api_version`]: crate::CloudburstBuilder::api_version
+    /// [`CloudburstBuilder::build_with_latest_version`]: crate::CloudburstBuilder::build_with_latest_version
+    pub async fn latest_api_version(&self) -> CloudburstResult<String> {
+        let list = self.versions().await?;
+        let latest = ApiVersion::latest(&list).ok_or_else(|| {
+            CloudburstError::InvalidResponse(
+                "/services/data returned no parseable API versions".into(),
+            )
+        })?;
+        Ok(format!("v{}", latest.version))
     }
 }
 
@@ -82,5 +107,105 @@ mod tests {
             }
             other => panic!("expected Api error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn api_version_number_parses_major_minor() {
+        let v = crate::ApiVersion {
+            label: "Spring '26".into(),
+            url: "/services/data/v66.0".into(),
+            version: "66.0".into(),
+        };
+        assert_eq!(v.version_number(), Some((66, 0)));
+    }
+
+    #[test]
+    fn api_version_number_returns_none_for_malformed() {
+        let v = crate::ApiVersion {
+            label: "x".into(),
+            url: "/services/data/vNaN".into(),
+            version: "not-a-version".into(),
+        };
+        assert_eq!(v.version_number(), None);
+    }
+
+    #[test]
+    fn latest_picks_highest_by_numeric_not_lexical_ordering() {
+        // Lexical ordering would put "9.0" > "60.0" > "10.0" — wrong.
+        // Numeric ordering puts 60.0 highest. This is the load-bearing
+        // test that catches the most-likely future regression.
+        let versions = vec![
+            crate::ApiVersion {
+                label: "x".into(),
+                url: "/x".into(),
+                version: "9.0".into(),
+            },
+            crate::ApiVersion {
+                label: "x".into(),
+                url: "/x".into(),
+                version: "60.0".into(),
+            },
+            crate::ApiVersion {
+                label: "x".into(),
+                url: "/x".into(),
+                version: "10.0".into(),
+            },
+        ];
+        let latest = crate::ApiVersion::latest(&versions).unwrap();
+        assert_eq!(latest.version, "60.0");
+    }
+
+    #[test]
+    fn latest_returns_none_for_empty_slice() {
+        assert!(crate::ApiVersion::latest(&[]).is_none());
+    }
+
+    #[tokio::test]
+    async fn latest_api_version_returns_v_prefixed_highest() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/services/data"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"label": "Winter '24", "url": "/services/data/v60.0", "version": "60.0"},
+                {"label": "Spring '26", "url": "/services/data/v66.0", "version": "66.0"},
+                {"label": "Summer '25", "url": "/services/data/v64.0", "version": "64.0"}
+            ])))
+            .mount(&server)
+            .await;
+
+        let auth = Arc::new(StaticTokenAuth::new("tok", server.uri()));
+        let sf = Cloudburst::builder().auth(auth).build().unwrap();
+
+        let latest = sf.latest_api_version().await.unwrap();
+        assert_eq!(latest, "v66.0");
+    }
+
+    #[tokio::test]
+    async fn build_with_latest_version_reconfigures_client() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/services/data"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"label": "Spring '26", "url": "/services/data/v66.0", "version": "66.0"},
+                {"label": "Winter '24", "url": "/services/data/v60.0", "version": "60.0"}
+            ])))
+            .mount(&server)
+            .await;
+
+        let auth = Arc::new(StaticTokenAuth::new("tok", server.uri()));
+        let sf = Cloudburst::builder()
+            .auth(auth)
+            .build_with_latest_version()
+            .await
+            .unwrap();
+        assert_eq!(sf.api_version(), "v66.0");
+        // URL resolution now uses the discovered version.
+        let url = sf.resolve_url("limits");
+        assert!(
+            url.contains("/v66.0/limits"),
+            "expected v66.0 in {url}"
+        );
     }
 }

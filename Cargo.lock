@@ -148,6 +148,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.2",
  "http-serde",
+ "httpdate",
  "jsonwebtoken",
  "reqwest",
  "serde",
@@ -156,6 +157,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "tokio",
+ "tracing",
  "url",
  "wiremock",
 ]

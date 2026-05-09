@@ -8,7 +8,7 @@
 - API surface: Phase 1 + entire composite family + Bulk 2.0 + Apex REST + Tooling API + Event Monitoring shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=, =composite/sobjects=, =composite=, =bulk().ingest()=, =bulk().query()=, =apex().{get,post,put,patch,delete}=, =tooling().{describe_global,sobject().*,query,search,execute_anonymous}=, =event_monitoring().{download,download_url}= + =EventLogFileRecord=.
 - Open-ended client escape hatch shipped: =get= / =get_with_query= / =post= / =put= / =patch= / =delete= / =request_builder= / =execute= on =Cloudburst= with three-mode path resolution.
 - Raw-body transport helpers shipped (=send_with_body= for CSV uploads, =fetch_raw= for CSV downloads with pagination headers, =send_multipart= for binary blob uploads via =sobject().create_with_blob= / =update_with_blob=). =parse_error_response= extracted from =parse_response_bytes= to share error-array parsing across all transport paths.
-- Test count baseline: 256 unit + 2 doctest, all passing; clippy clean.
+- Test count baseline: 267 unit + 2 doctest, all passing; clippy clean.
 
 * Design principle: open-ended client (octocrab-style escape hatch)
 :PROPERTIES:
@@ -255,7 +255,7 @@ either typed JSON or =serde_json::Value=.
 - [ ] Automotive Cloud
 - [ ] Media Cloud
 
-* Cross-cutting infrastructure [5/11]
+* Cross-cutting infrastructure [9/11]
 ** DONE Open-ended client escape hatch
 - Public =get= / =get_with_query= / =post= / =put= / =patch= / =delete= on =Cloudburst=, plus =request_builder(method, path)= (auth-injected) and =execute(reqwest::Request)= (hands-off) for full bypass.
 - Three-mode path resolution in =Cloudburst::resolve_url=: relative → versioned, leading-=/= → instance-rooted, =http(s)://= → passthrough. Locks in the [[*Design principle: open-ended client (octocrab-style escape hatch)][design-principle contract]].
@@ -269,7 +269,12 @@ either typed JSON or =serde_json::Value=.
 - Runtime-agnostic by construction: only depends on =futures::Stream= and =BoxFuture=, which are runtime-neutral. Consumers can drive with smol/async-std/tokio — no =#[tokio::main]= required at the consumer level. (Reqwest's transport still needs Tokio internally, but that's a transport concern, not surfaced in the SDK's public types.)
 - *Not* covered: Bulk 2.0 query results (different cursor shape — =Sforce-Locator= header carrying literal "null" — and CSV bytes vs JSON records). A separate stream type would be needed; documented in the module-level comment as deliberately deferred.
 - 8 wiremock tests covering single-page, 3-page paginated, mid-stream error, drop-after-page-1 (no extra fetch), typed deserialization, =/queryAll= variant, Tooling-prefixed locator follow-ups, and buffer-then-fetch sequencing via atomic counter.
-** TODO Standardize handler module template (request → builder → execute → typed response)
+** DONE Standardize handler module template
+- Documented two blessed patterns in =handlers/mod.rs= module-level docs:
+  - *Pattern A* — verb method on =Cloudburst= directly (=query=, =versions=, =search=, =limits=). For surfaces with no intrinsic scoping, single entry point, 1–4 closely related methods.
+  - *Pattern B* — handler struct returned by a method on =Cloudburst= (=sobjects=, =bulk=, =composite=, =tooling=, =apex=, =event_monitoring=). For surfaces with intrinsic scoping (per-object, per-job) or multiple sub-surfaces.
+- Decision matrix (signal → pattern) + module-skeleton template with the universal rules (layer over public verbs; never define user-facing record types; untyped + =_as<R>= variants; pagination via =Records<R>=; complex inputs via typed =Spec= structs; standard error parsing).
+- Existing handlers were already conformant — no refactoring needed; the doc just makes the conventions discoverable.
 ** DONE Retry + backoff policy (=429=, =503=, transient =5xx=)
 - New top-level =retry= module exposing =RetryPolicy= struct (max_retries, base_delay, max_delay, jitter, retry_idempotent_5xx) with sensible defaults (3 retries, 100 ms base, 30 s cap, full jitter via =getrandom::fill=, retry idempotent 5xx).
 - =RetryPolicy::default()= for the standard policy; =RetryPolicy::none()= to disable retries entirely.
@@ -292,9 +297,32 @@ either typed JSON or =serde_json::Value=.
 - Cap of 1 auth-retry per call. A second 401 after refresh means the issue isn't token expiry (permission / scope problem); surface it.
 - Distinct from =RetryPolicy=: auto-refresh is always-on, not configurable. Token expiry isn't a "transient failure" in the retry-policy sense; it's an auth-layer concern that the SDK should handle transparently regardless of how aggressively the user tuned retries.
 - 4 integration tests in =lib::tests::auth_refresh= using a custom =RotatingAuth= test fixture that yields different tokens per call: 401-then-200 succeeds with new token; 401 with same-token-after-refresh surfaces (no infinite loop); two consecutive 401s surface (cap respected); non-401 errors don't trigger invalidation. Plus 1 unit test in =auth::jwt= verifying compare-and-swap behavior at the trait level.
-** TODO API version selection / negotiation (default to "latest seen", allow override)
-** TODO Conditional requests (=If-Modified-Since=, =If-Match=) where Salesforce honors them
-** TODO Tracing / =tracing= integration (replacing the lint ban on =println!=)
+** DONE API version selection / negotiation
+- =ApiVersion::version_number()= — parses =version: "60.0"= into =(60, 0)= for numeric ordering. Catches the load-bearing bug where lexical comparison would put =9.0 > 60.0=.
+- =ApiVersion::latest(&[ApiVersion])= — returns the highest entry by numeric ordering. =None= for empty slice; malformed entries compare as smallest.
+- =Cloudburst::latest_api_version()= convenience — fetches =/services/data= and returns the formatted =vNN.N= string.
+- =CloudburstBuilder::build_with_latest_version()= — bootstraps the client, discovers the latest version, and returns a reconfigured client in one step. Bootstrap call uses =DEFAULT_API_VERSION= but =/services/data= is unversioned so the choice doesn't matter.
+- 7 new tests in =handlers::versions= (numeric parse, latest selection w/ lexical-bug regression test, builder integration, malformed input).
+** DONE Conditional requests (=If-Modified-Since=)
+- New transport helper =Cloudburst::send_with_headers= — accepts arbitrary extra headers, returns =(status, bytes::Bytes)= so the caller can dispatch on specific statuses. Treats both 2xx and 304 as success; other non-2xx surfaces as the standard =CloudburstError::Api=. Full retry + auth-refresh + =Sforce-Limit-Info= capture.
+- =SObjectsHandler::describe_global_if_modified_since(SystemTime) -> Option<DescribeGlobal>= — None on 304, Some on 200.
+- =SObjectHandler::describe_if_modified_since= and =describe_if_modified_since_as<R>= — same pattern for per-object describe.
+- =httpdate= dep added for RFC 7231 IMF-fixdate formatting (=Wed, 21 Oct 2015 07:28:00 GMT=). ~5KB; cleaner than rolling our own date formatter.
+- 5 wiremock tests covering: 200 returns Some, 304 returns None (both global and per-object), typed deserialization through =describe_if_modified_since_as<R>=, other 4xx (403) surfacing as Api error rather than None.
+- *Deferred:* =If-Match= / ETag-based optimistic concurrency. Salesforce's ETag support is patchy across endpoints and the use case is narrow; revisit if a consumer asks.
+** DONE Tracing / =tracing= integration
+- Added =tracing= dep (default-features off, =std= feature only — no =attributes= macros, just the events).
+- *Strategy:* events at strategic centralized points rather than spans on every method. Spans require careful async-runtime integration (=Future::instrument=); events alone give 80% of the value with simpler code.
+- Event placements:
+  - =cloudburst::limit_info= (DEBUG): every captured =Sforce-Limit-Info= header — used / allowed.
+  - =cloudburst::retry= (WARN): every retry attempt — attempt#, delay_ms, source (=retry-after-header= or =exponential-backoff=). Centralized in =compute_delay= so all five send paths get coverage from one log site.
+  - =cloudburst::auth= (WARN): on 401 → "received 401; invalidating cached token and retrying once". Centralized via =replace_all= across all five send paths since the structure is identical.
+  - =cloudburst::auth= (WARN): when post-invalidate token equals stale → "auth session returned same token after invalidate; surfacing 401".
+  - =cloudburst::auth= (INFO): on token mint in JWT / Refresh / ClientCredentials flows — flow + login_url.
+  - =cloudburst::auth= (DEBUG): on =invalidate= CAS match (cache cleared).
+  - =cloudburst::auth= (TRACE): on =invalidate= CAS miss (concurrent refresh detected; no-op).
+- *Targets* let consumers filter by subsystem: =cloudburst::auth=, =cloudburst::retry=, =cloudburst::limit_info=. Default subscriber config emits at WARN+; users can opt into DEBUG/TRACE per-target.
+- *Privacy:* never log access tokens, request bodies, response bodies. URLs and methods are logged for retry context; query strings are logged via reqwest's separate =.query()= channel which doesn't surface here.
 ** TODO Wiremock test pass — happy/error paths per builder
 - Build-as-you-go: every new handler ships with wiremock coverage.
 - Distinct from live integration tests under [[*Pre-release gates][Pre-release gates]] — these stay fast and run on every CI build.

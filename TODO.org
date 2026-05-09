@@ -8,7 +8,7 @@
 - API surface: Phase 1 + entire composite family + Bulk 2.0 + Apex REST + Tooling API shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=, =composite/sobjects=, =composite=, =bulk().ingest()=, =bulk().query()=, =apex().{get,post,put,patch,delete}=, =tooling().{describe_global,sobject().*,query,query_all,execute_anonymous}=.
 - Open-ended client escape hatch shipped: =get= / =get_with_query= / =post= / =put= / =patch= / =delete= / =request_builder= / =execute= on =Cloudburst= with three-mode path resolution.
 - Raw-body transport helpers shipped (=send_with_body= for CSV uploads, =fetch_raw= for CSV downloads with pagination headers). =parse_error_response= extracted from =parse_response_bytes= to share error-array parsing across both transport paths.
-- Test count baseline: 202 unit + 2 doctest, all passing; clippy clean.
+- Test count baseline: 204 unit + 2 doctest, all passing; clippy clean.
 
 * Design principle: open-ended client (octocrab-style escape hatch)
 :PROPERTIES:
@@ -90,6 +90,7 @@ either typed JSON or =serde_json::Value=.
 * Phase 1 — MVP REST API surface [8/8]
 :PROPERTIES:
 :GOAL: Exercise the auth layer end-to-end and lock in the request/response/handler shape that all later tiers reuse.
+:AUDIT: Doc-driven audit complete — verified =ApiVersion=, =SObjectCreateResult=, =DescribeGlobal=, =SObjectMetadata= (22 fields), =Limit= / =OrgLimits= (incl. nested =PermissionSets.CreateCustom=), =QueryResult=, =SearchResult= against doc examples (=dome_versions=, =dome_sobject_create=, =dome_describeGlobal=, =dome_query=, =dome_search=, =dome_limits=). All shapes correct as shipped — no fixes needed.
 :END:
 ** DONE =/services/data= — list versions (=handlers::versions=)
 ** DONE =/services/data/vXX.X/limits= (=handlers::limits=)
@@ -146,9 +147,15 @@ either typed JSON or =serde_json::Value=.
 - =Cloudburst::bulk()= → =BulkHandler= → =ingest()= / =query()= sub-handlers covering both async flavors.
 - Ingest lifecycle: =create=, =upload= (CSV bytes via =text/csv=), =close=, =abort=, =get=, =delete=, plus raw-CSV result fetchers =successful_results= / =failed_results= / =unprocessed_records=.
 - Query lifecycle: =create=, =get=, =results= (with =Sforce-Locator= cursor pagination via =BulkQueryResults.locator=), =abort=, =delete=. Treats =Sforce-Locator: null= as drained (=locator: None=), matching the documented end-of-stream signal.
-- Typed enums =BulkOperation=, =BulkJobState=, =BulkLineEnding=, =BulkColumnDelimiter=. Distinct =BulkIngestJob= / =BulkQueryJob= response structs because their field shapes diverge meaningfully (object/externalIdFieldName/numberRecordsFailed vs. query/errorMessage).
+- Typed enums =BulkOperation=, =BulkJobState=, =BulkLineEnding=, =BulkColumnDelimiter=. Distinct =BulkIngestJob= / =BulkQueryJob= response structs because their field shapes diverge meaningfully (object/externalIdFieldName/numberRecordsFailed vs. isPkChunkingSupported).
 - *No automated polling.* SDK exposes the building blocks; correct poll cadence depends on payload size and is the caller's call. Documented prominently on =BulkIngestHandler= and =BulkQueryHandler=.
 - Required new transport: =Cloudburst::send_with_body= (raw upload with custom Content-Type) and =Cloudburst::fetch_raw= (raw bytes + headers download). Both go through =parse_error_response= on non-2xx so Salesforce errors surface as =CloudburstError::Api= consistently with the JSON path.
+- *Doc-driven audit (post-fetcher rewrite):* verified all 10 critical doc pages (=create_job=, =upload_job_data=, =close_job=, =abort_job=, =get_job_info=, =get_job_successful_results=, =get_job_failed_results=, =get_job_unprocessed_results=, =query_create_job=, =query_get_one_job=, =query_get_job_results=) and applied the following fixes:
+  - *Critical bug fixed:* =BulkQueryJob.query: String= was a required field but Salesforce *never echoes the SOQL back* in any response — would have failed deserialization on every real call. Removed the field; replaced with =object: String= which IS in the response.
+  - *Critical bug fixed:* =BulkQueryJob.job_type: String= was required but absent from the CREATE response (only in GET). Made =Option<String>=.
+  - *Gap fixed:* added =BulkQueryJob.is_pk_chunking_supported: Option<bool>= per the GET-job response shape.
+  - *Gap fixed:* added =BulkIngestJob.error_message: Option<String>= per the documented =errorMessage= field for failed ingest jobs.
+- All other shapes (URL casing variations like =successfulResults= camelCase vs =unprocessedrecords= lowercase, enum value casing, =Sforce-Locator= literal-"null" sentinel, request specs) verified correct against docs.
 ** DONE Apex REST passthrough (=handlers::apex=)
 - =Cloudburst::apex()= → =ApexHandler= with =get= / =get_with_query= / =post= / =put= / =patch= / =delete= methods. Each forwards through the matching =Cloudburst::*= verb after path normalization.
 - *Path normalization:* prepends =/services/apexrest/= to the caller's path, accepting both =MyEndpoint= and =/MyEndpoint=. Subpaths (=Cases/12345/comments=) pass through verbatim. *No percent-encoding* of segments — for paths containing reserved characters, callers pre-encode.

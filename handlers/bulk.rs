@@ -651,11 +651,16 @@ mod tests {
     }
 
     fn query_job_response(id: &str, state: &str) -> serde_json::Value {
+        // Mirrors the documented query-job CREATE response — see
+        // api_asynch query_create_job. Salesforce parses the SOQL,
+        // surfaces `object`, and never echoes the original `query`
+        // string. `jobType` is absent until the GET endpoint, so we
+        // omit it here too — tests for GET shape live in response.rs.
         json!({
             "id": id,
             "operation": "query",
             "state": state,
-            "query": "SELECT Id, Name FROM Account",
+            "object": "Account",
             "createdById": "005xx",
             "createdDate": "2024-01-01T00:00:00.000+0000",
             "systemModstamp": "2024-01-01T00:00:00.000+0000",
@@ -663,8 +668,7 @@ mod tests {
             "contentType": "CSV",
             "apiVersion": 60.0,
             "lineEnding": "LF",
-            "columnDelimiter": "COMMA",
-            "jobType": "V2Query"
+            "columnDelimiter": "COMMA"
         })
     }
 

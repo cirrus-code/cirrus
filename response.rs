@@ -278,19 +278,37 @@ pub struct BulkIngestJob {
     pub api_active_processing_time: Option<i64>,
     #[serde(rename = "apexProcessingTime", default)]
     pub apex_processing_time: Option<i64>,
+    /// Error message for jobs in `Failed` state. `None` for healthy
+    /// jobs. Per the Get Job Info doc — see `errorMessage` field.
+    #[serde(rename = "errorMessage", default)]
+    pub error_message: Option<String>,
 }
 
 /// Response from `POST /jobs/query` and `GET /jobs/query/{jobId}`.
 ///
-/// Field availability varies by job state. `error_message` is populated
-/// when [`state`](Self::state) is `Failed`; otherwise `None`.
+/// Field availability varies by job state and request kind:
+///
+/// - The CREATE response (POST) includes the core identification fields
+///   (`id`, `operation`, `object`, timestamps, `state`, formatting flags)
+///   but **omits** `job_type`, `number_records_processed`, `retries`,
+///   `total_processing_time`, `is_pk_chunking_supported`.
+/// - The GET response includes the post-execution fields once the job
+///   reaches `JobComplete`.
+///
+/// Salesforce **never echoes the original SOQL `query` string** back in
+/// either response — it's intentionally write-only at this tier. If you
+/// need to recover the SOQL, hold onto your [`BulkQuerySpec`] before
+/// calling [`crate::handlers::bulk::BulkQueryHandler::create`].
+///
+/// [`BulkQuerySpec`]: crate::handlers::bulk::BulkQuerySpec
 #[derive(Debug, Clone, Deserialize)]
 pub struct BulkQueryJob {
     pub id: String,
     pub operation: BulkOperation,
     pub state: BulkJobState,
-    /// SOQL query the job runs.
-    pub query: String,
+    /// Object the SOQL targets (parsed and surfaced by Salesforce —
+    /// not the original SOQL).
+    pub object: String,
     #[serde(rename = "lineEnding")]
     pub line_ending: BulkLineEnding,
     #[serde(rename = "columnDelimiter")]
@@ -299,8 +317,10 @@ pub struct BulkQueryJob {
     pub content_type: String,
     #[serde(rename = "apiVersion")]
     pub api_version: f32,
-    #[serde(rename = "jobType")]
-    pub job_type: String,
+    /// `"V2Query"` once the job reaches the GET endpoint. **Not** echoed
+    /// in CREATE responses; expect `None` until GET.
+    #[serde(rename = "jobType", default)]
+    pub job_type: Option<String>,
     #[serde(rename = "concurrencyMode")]
     pub concurrency_mode: String,
     #[serde(rename = "createdById")]
@@ -315,6 +335,13 @@ pub struct BulkQueryJob {
     pub retries: Option<i32>,
     #[serde(rename = "totalProcessingTime", default)]
     pub total_processing_time: Option<i64>,
+    /// Whether PK chunking is supported for the queried object.
+    /// Populated on GET responses only (not CREATE).
+    #[serde(rename = "isPkChunkingSupported", default)]
+    pub is_pk_chunking_supported: Option<bool>,
+    /// Error message for jobs in `Failed` state. The docs don't list
+    /// this field for healthy query jobs, but it appears on failed
+    /// jobs in practice (mirrors the ingest job shape).
     #[serde(rename = "errorMessage", default)]
     pub error_message: Option<String>,
 }
@@ -1036,15 +1063,49 @@ mod tests {
         assert_eq!(job.external_id_field_name.as_deref(), Some("External_Id__c"));
         assert_eq!(job.number_records_processed, Some(1000));
         assert_eq!(job.number_records_failed, Some(5));
+        assert!(job.error_message.is_none());
+    }
+
+    #[test]
+    fn parses_bulk_ingest_job_failed_with_error_message() {
+        // Verifies the errorMessage field documented in the Get Ingest
+        // Job page surfaces correctly. Failed ingest jobs carry an
+        // operator-readable explanation here.
+        let body = json!({
+            "id": "750xx",
+            "operation": "insert",
+            "object": "Account",
+            "createdById": "005xx",
+            "createdDate": "2024-01-01T00:00:00.000+0000",
+            "systemModstamp": "2024-01-01T00:00:01.000+0000",
+            "state": "Failed",
+            "concurrencyMode": "Parallel",
+            "contentType": "CSV",
+            "apiVersion": 60.0,
+            "lineEnding": "LF",
+            "columnDelimiter": "COMMA",
+            "jobType": "V2Ingest",
+            "errorMessage": "InvalidJobState : Aborted by user"
+        })
+        .to_string();
+        let job: BulkIngestJob = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert_eq!(job.state, BulkJobState::Failed);
+        assert_eq!(
+            job.error_message.as_deref(),
+            Some("InvalidJobState : Aborted by user")
+        );
     }
 
     #[test]
     fn parses_bulk_query_job_response() {
+        // Mirrors the GET-job example from the api_asynch
+        // query_get_one_job doc: post-execution fields populated, no
+        // `query` field (Salesforce never echoes the SOQL back).
         let body = json!({
             "id": "750xx",
             "operation": "queryAll",
             "state": "JobComplete",
-            "query": "SELECT Id, Name FROM Account",
+            "object": "Account",
             "createdById": "005xx",
             "createdDate": "2024-01-01T00:00:00.000+0000",
             "systemModstamp": "2024-01-01T00:00:01.000+0000",
@@ -1055,14 +1116,47 @@ mod tests {
             "columnDelimiter": "COMMA",
             "jobType": "V2Query",
             "numberRecordsProcessed": 5000,
-            "totalProcessingTime": 8000
+            "retries": 0,
+            "totalProcessingTime": 8000,
+            "isPkChunkingSupported": true
         })
         .to_string();
         let job: BulkQueryJob = parse_response_bytes(200, body.as_bytes()).unwrap();
         assert_eq!(job.operation, BulkOperation::QueryAll);
         assert_eq!(job.state, BulkJobState::JobComplete);
-        assert_eq!(job.query, "SELECT Id, Name FROM Account");
+        assert_eq!(job.object, "Account");
+        assert_eq!(job.job_type.as_deref(), Some("V2Query"));
+        assert_eq!(job.is_pk_chunking_supported, Some(true));
         assert!(job.error_message.is_none());
+    }
+
+    #[test]
+    fn parses_bulk_query_job_create_response_without_jobtype() {
+        // Mirrors the CREATE-job example from query_create_job doc:
+        // `jobType`, `numberRecordsProcessed`, `retries`, etc. are all
+        // absent until the GET endpoint. Critical regression test —
+        // our previous struct required `jobType` and would have failed
+        // here.
+        let body = json!({
+            "id": "750xx",
+            "operation": "query",
+            "object": "Account",
+            "createdById": "005xx",
+            "createdDate": "2024-01-01T00:00:00.000+0000",
+            "systemModstamp": "2024-01-01T00:00:00.000+0000",
+            "state": "UploadComplete",
+            "concurrencyMode": "Parallel",
+            "contentType": "CSV",
+            "apiVersion": 60.0,
+            "lineEnding": "LF",
+            "columnDelimiter": "COMMA"
+        })
+        .to_string();
+        let job: BulkQueryJob = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert_eq!(job.state, BulkJobState::UploadComplete);
+        assert!(job.job_type.is_none());
+        assert!(job.number_records_processed.is_none());
+        assert!(job.is_pk_chunking_supported.is_none());
     }
 
     #[test]
@@ -1071,7 +1165,7 @@ mod tests {
             "id": "750xx",
             "operation": "query",
             "state": "Failed",
-            "query": "SELECTT Id FROM Account",
+            "object": "Account",
             "createdById": "005xx",
             "createdDate": "2024-01-01T00:00:00.000+0000",
             "systemModstamp": "2024-01-01T00:00:01.000+0000",

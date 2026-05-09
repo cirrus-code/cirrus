@@ -17,10 +17,12 @@
 //!
 //! [`Cloudburst`]: crate::Cloudburst
 
+pub mod apex;
 pub mod bulk;
 pub mod composite;
 pub mod limits;
 pub mod query;
 pub mod search;
 pub mod sobjects;
+pub mod tooling;
 pub mod versions;

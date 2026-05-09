@@ -56,8 +56,8 @@ pub use response::{
     ApiVersion, BatchResponse, BatchSubresult, BulkColumnDelimiter, BulkIngestJob, BulkJobState,
     BulkLineEnding, BulkOperation, BulkQueryJob, BulkQueryResults, CompositeError,
     CompositeResponse, CompositeSubresponse, CompositeTreeResponse, CompositeTreeResult,
-    DescribeGlobal, Limit, OrgLimits, QueryResult, SObjectCollectionResult, SObjectCreateResult,
-    SObjectMetadata, SearchResult,
+    DescribeGlobal, ExecuteAnonymousResult, Limit, OrgLimits, QueryResult,
+    SObjectCollectionResult, SObjectCreateResult, SObjectMetadata, SearchResult,
 };
 
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};

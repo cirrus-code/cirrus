@@ -548,6 +548,49 @@ pub struct SObjectCollectionResult {
     pub created: Option<bool>,
 }
 
+/// Result envelope from `GET /tooling/executeAnonymous?anonymousBody=...`.
+///
+/// Reports whether the supplied Apex source code compiled and executed
+/// successfully. The shape encodes three outcomes:
+///
+/// - **Success.** `compiled = true`, `success = true`,
+///   `compile_problem`/`exception_message` are `None`,
+///   `line`/`column` are `-1`.
+/// - **Compile error.** `compiled = false`, `success = false`,
+///   `compile_problem` is `Some(...)`, `line`/`column` point at the
+///   offending source location.
+/// - **Runtime error.** `compiled = true`, `success = false`,
+///   `exception_message`/`exception_stack_trace` are `Some(...)`. The
+///   `line`/`column` typically reflect where the exception was thrown.
+///
+/// `line` and `column` use `-1` as the "no error" sentinel — that's the
+/// SOAP-era convention bleeding through. Callers should branch on
+/// [`success`](Self::success) rather than checking these for `>= 0`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExecuteAnonymousResult {
+    /// `true` if the Apex source compiled. `false` indicates a syntax
+    /// or symbol-resolution failure — see
+    /// [`compile_problem`](Self::compile_problem).
+    pub compiled: bool,
+    /// Compiler diagnostic text when [`compiled`](Self::compiled) is
+    /// `false`. `None` on successful compile.
+    #[serde(rename = "compileProblem", default)]
+    pub compile_problem: Option<String>,
+    /// `true` if the code both compiled *and* ran without throwing.
+    pub success: bool,
+    /// Source line of the error (1-based), or `-1` if no error.
+    pub line: i32,
+    /// Source column of the error (1-based), or `-1` if no error.
+    pub column: i32,
+    /// Runtime-exception text when an unhandled exception was thrown.
+    /// `None` when the code ran cleanly or failed to compile.
+    #[serde(rename = "exceptionMessage", default)]
+    pub exception_message: Option<String>,
+    /// Apex stack trace accompanying [`exception_message`](Self::exception_message).
+    #[serde(rename = "exceptionStackTrace", default)]
+    pub exception_stack_trace: Option<String>,
+}
+
 /// Parses a Salesforce response body, branching on the HTTP status.
 ///
 /// On 2xx, the body is deserialized into `R` (use `serde_json::Value` for an

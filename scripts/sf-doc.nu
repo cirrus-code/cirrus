@@ -1,67 +1,141 @@
 #!/usr/bin/env nu
 
-# Fetch a Salesforce help page and convert it to plain text.
+# Fetch a Salesforce help-doc page and convert it to plain text.
 #
-# Salesforce help articles are Lightning SPAs — `curl` and naive headless
-# Chromium dumps return only the loading shell, since the article body is
-# fetched by a follow-up XHR after the page mounts. This script drives
-# `single-file-cli` (puppeteer + Chromium under the hood, with `networkidle0`
-# semantics) to wait for full render, then runs the result through pandoc
-# to strip the chrome and asset bloat down to pandoc-plain text.
+# Salesforce's developer.salesforce.com Lightning SPA loads each article
+# body via an internal JSON content API that this script hits directly:
 #
-# Examples:
+#   https://developer.salesforce.com/docs/get_document_content/{guide}/{page}.htm/{lang}/{version}
 #
-#   nu scripts/sf-doc.nu 'https://help.salesforce.com/s/articleView?id=xcloud.remoteaccess_oauth_jwt_flow.htm&language=en_US&type=5'
-#   nu scripts/sf-doc.nu --format markdown -o /tmp/jwt.md <URL>
-#   nu scripts/sf-doc.nu --keep-html <URL>
+# The response is JSON `{id, title, content}` where `content` is HTML.
+# We extract `content`, hand it to pandoc, and write the result out.
+#
+# This replaces the previous puppeteer/single-file-cli flow, which was
+# (a) ~50× slower and (b) racy — pages with delayed XHRs would render as
+# the navigation/intro shell instead of the article body. A historical
+# probe (scripts/sf-doc-probe.js) identified the content endpoint by
+# watching the SPA's network traffic.
+#
+# Usage:
+#
+#   nu scripts/sf-doc.nu '<URL>'
+#   nu scripts/sf-doc.nu '<URL>' --output ~/.cache/cloudburst-sdk/sf-docs/foo.md --format markdown
+#   nu scripts/sf-doc.nu --guide api_tooling --page intro_rest_resources
+#   nu scripts/sf-doc.nu --guide api_tooling --manifest    # dump TOC instead of an article
+#
+# The two-flag form is preferred when you've discovered the canonical
+# page ID from the manifest — URL-derived page slugs sometimes differ
+# from the manifest's actual `id` (e.g. `tooling_api_rest_query.htm`
+# does not exist; the real id is `intro_rest_resources`).
+
+const CONTENT_BASE = "https://developer.salesforce.com/docs/get_document_content"
+const MANIFEST_BASE = "https://developer.salesforce.com/docs/get_document"
+const DEFAULT_LANG = "en-us"
+
+# We shell out to `curl` rather than using nu's `http get`. Reason:
+# developer.salesforce.com's docs site ironically rejects browser-like
+# User-Agents (Mozilla/5.0 → 403 or connection drop) but accepts curl's
+# default `curl/X.Y.Z`. nushell's default UA is also rejected. Trying to
+# spoof curl's UA from nu is doable but fragile — easier to just use
+# curl. This keeps the script's network behavior identical to what we
+# verified manually.
+
+# Parse a Salesforce help URL into (guide, page).
+def parse-doc-url [url: string] {
+    let m = (
+        $url
+        | parse --regex 'atlas\.[a-z-]+\.(?<guide>[A-Za-z0-9_]+)\.meta/[A-Za-z0-9_]+/(?<page>[A-Za-z0-9_]+)\.htm'
+        | get --optional 0
+    )
+    if $m != null {
+        return { guide: $m.guide, page: $m.page }
+    }
+    let h = (
+        $url
+        | parse --regex 'id=(?<guide>[A-Za-z0-9_]+)\.(?<page>[A-Za-z0-9_]+)\.htm'
+        | get --optional 0
+    )
+    if $h != null {
+        return { guide: $h.guide, page: $h.page }
+    }
+    error make { msg: $"could not parse guide/page from URL: ($url)" }
+}
+
+# Fetch the guide manifest. Used to (a) discover the current docs-site
+# version so the content endpoint URL stays valid as Salesforce ships
+# docs releases, and (b) dump the TOC when --manifest is set.
+def fetch-manifest [guide: string, lang: string] {
+    let url = $"($MANIFEST_BASE)/atlas.($lang).($guide).meta"
+    ^curl --silent --show-error --fail --max-time 30 $url | from json
+}
+
+# Fetch the article content as JSON {id, title, content (HTML)}.
+def fetch-content [guide: string, page: string, lang: string, version: string] {
+    let url = $"($CONTENT_BASE)/($guide)/($page).htm/($lang)/($version)"
+    let raw = (^curl --silent --show-error --fail --max-time 30 $url)
+    if ($raw | str length) == 0 {
+        error make { msg: $"content endpoint returned empty body — page id '($page)' may not exist in guide '($guide)'. Try `--guide ($guide) --manifest` to list valid IDs." }
+    }
+    $raw | from json
+}
 
 def main [
-    url: string,                          # Salesforce help / dev-docs URL
-    --output (-o): path,                  # Output path; default derived from the URL's `id=` param
-    --format (-f): string = "plain",      # pandoc output format (e.g. plain, markdown, gfm)
-    --wait-delay: int = 5000,             # ms to wait after networkidle for late XHRs
-    --viewport-height: int = 4000,        # tall viewport so all content paints
-    --keep-html,                          # keep the intermediate single-file HTML
-    --chromium: path,                     # override chromium path (default: $(which chromium))
+    url?: string,                       # full Salesforce help URL
+    --guide: string,                    # alternative to URL: guide identifier (e.g. api_tooling)
+    --page: string,                     # alternative to URL: page identifier (e.g. intro_rest_resources)
+    --output (-o): path,                # output file path (default: ~/.cache/cloudburst-sdk/sf-docs/{page}.{format})
+    --format (-f): string = "plain",    # pandoc target format (plain, markdown, gfm, ...)
+    --lang: string = $DEFAULT_LANG,     # docs language code
+    --version: string,                  # override docs-site version (default: discover from manifest)
+    --manifest,                         # dump the guide's TOC manifest instead of an article
 ] {
-    let chromium_path = if $chromium == null {
-        which chromium | get --optional 0.path
+    let parsed = if $url != null {
+        parse-doc-url $url
+    } else if $guide != null and $page != null {
+        { guide: $guide, page: $page }
+    } else if $guide != null and $manifest {
+        { guide: $guide, page: null }
     } else {
-        $chromium
-    }
-    if $chromium_path == null {
-        error make { msg: "chromium not found on PATH; pass --chromium /path/to/chromium" }
+        error make { msg: "must supply <URL>, or --guide and --page, or --guide and --manifest" }
     }
 
-    let stem = (
-        $url
-        | parse --regex 'id=(?<id>[^&]+)'
-        | get --optional 0.id
-        | default (random uuid | str substring 0..8)
-    )
-    let out = ($output | default $"/tmp/sf-doc-($stem).($format)")
-    let html = $"/tmp/sf-doc-($stem).html"
-
-    print $"→ rendering ($url)"
-    (
-        ^nix run nixpkgs#single-file-cli --
-            $url $html
-            --browser-executable-path $chromium_path
-            --block-scripts=false
-            --block-images
-            --block-fonts
-            --browser-wait-delay $wait_delay
-            --browser-height $viewport_height
-            --browser-wait-until networkidle0
-    )
-
-    print $"→ pandoc → ($out)"
-    ^pandoc -f html -t $format $html -o $out
-
-    if not $keep_html {
-        rm $html
+    if $manifest {
+        let mf = (fetch-manifest $parsed.guide $lang)
+        let out = ($output | default $"($env.HOME)/.cache/cloudburst-sdk/sf-docs/manifest-($parsed.guide).json")
+        mkdir ($out | path dirname)
+        $mf | to json --indent 2 | save -f $out
+        print $"✓ wrote manifest to ($out)"
+        print $out
+        return
     }
 
+    let resolved_version = if $version != null {
+        $version
+    } else {
+        let mf = (fetch-manifest $parsed.guide $lang)
+        # The manifest's `version` field is a record. The doc_version we
+        # want is what the content endpoint accepts; fall back to the
+        # first available_versions entry if the layout changes.
+        let v = ($mf.version | get --optional doc_version)
+        if $v != null { $v } else {
+            $mf.available_versions | get 0.doc_version
+        }
+    }
+
+    let doc = (fetch-content $parsed.guide $parsed.page $lang $resolved_version)
+    let out = ($output | default $"($env.HOME)/.cache/cloudburst-sdk/sf-docs/($parsed.page).($format)")
+    mkdir ($out | path dirname)
+
+    # The API returns content as a fragment (no <html><body>). pandoc's
+    # html reader handles fragments fine, but wrapping makes pandoc emit
+    # a title and lets the rendered output stand alone.
+    let html_path = $"($env.HOME)/.cache/cloudburst-sdk/sf-docs/.tmp-($parsed.page).html"
+    let wrapped = $"<!DOCTYPE html><html><head><title>($doc.title)</title></head><body><h1>($doc.title)</h1>($doc.content)</body></html>"
+    $wrapped | save -f $html_path
+
+    ^pandoc -f html -t $format $html_path -o $out
+
+    rm $html_path
     let line_count = (^wc -l $out | split row ' ' | get 0 | into int)
     print $"✓ wrote ($out) \(($line_count) lines\)"
     print $out

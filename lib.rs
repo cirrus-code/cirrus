@@ -48,12 +48,16 @@ mod error;
 pub mod handlers;
 pub mod pagination;
 mod response;
+pub mod retry;
 
 pub use auth::{AuthSession, SharedAuth};
 pub use error::{CloudburstError, CloudburstResult, SalesforceError};
 pub use handlers::bulk::{BulkIngestSpec, BulkQuerySpec};
-pub use handlers::composite::{BatchRequest, BatchSubrequest, CompositeRequest, CompositeSubrequest};
+pub use handlers::composite::{
+    BatchRequest, BatchSubrequest, CompositeRequest, CompositeSubrequest,
+};
 pub use pagination::Records;
+pub use response::LimitInfo;
 pub use response::{
     ApiVersion, BatchResponse, BatchSubresult, BulkColumnDelimiter, BulkIngestJob, BulkJobState,
     BulkLineEnding, BulkOperation, BulkQueryJob, BulkQueryResults, CompositeError,
@@ -61,10 +65,12 @@ pub use response::{
     DescribeGlobal, EventLogFileRecord, ExecuteAnonymousResult, Limit, OrgLimits, QueryResult,
     SObjectCollectionResult, SObjectCreateResult, SObjectMetadata, SearchResult,
 };
+pub use retry::RetryPolicy;
 
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use std::sync::{Arc, RwLock};
 
 /// Default Salesforce REST API version when the caller doesn't override it.
 pub const DEFAULT_API_VERSION: &str = "v60.0";
@@ -86,6 +92,11 @@ pub struct Cloudburst {
     client: reqwest::Client,
     auth: SharedAuth,
     api_version: String,
+    retry_policy: RetryPolicy,
+    /// Most recent `Sforce-Limit-Info` header value, parsed. Wrapped
+    /// in `Arc<RwLock<...>>` so updates are visible across cloned
+    /// clients (clones share state).
+    last_limit_info: Arc<RwLock<Option<LimitInfo>>>,
 }
 
 impl std::fmt::Debug for Cloudburst {
@@ -95,6 +106,7 @@ impl std::fmt::Debug for Cloudburst {
         f.debug_struct("Cloudburst")
             .field("api_version", &self.api_version)
             .field("instance_url", &self.auth.instance_url())
+            .field("retry_policy", &self.retry_policy)
             .finish_non_exhaustive()
     }
 }
@@ -120,6 +132,44 @@ impl Cloudburst {
     /// Returns the auth session backing this client.
     pub fn auth(&self) -> &SharedAuth {
         &self.auth
+    }
+
+    /// Returns the configured retry policy.
+    pub fn retry_policy(&self) -> &RetryPolicy {
+        &self.retry_policy
+    }
+
+    /// Returns the most recent [`LimitInfo`] parsed from a
+    /// `Sforce-Limit-Info` response header, if one has been seen.
+    ///
+    /// Salesforce includes this header on most REST API responses to
+    /// surface near-real-time API call usage. The SDK captures it
+    /// transparently on every request — successful, retried, or
+    /// errored at the HTTP layer. Returns `None` until the first
+    /// response with the header lands.
+    ///
+    /// Cloned clients share the same underlying state, so updates
+    /// from one are visible from others. Same surfacing pattern
+    /// jsforce uses for `Connection.limitInfo`.
+    pub fn last_limit_info(&self) -> Option<LimitInfo> {
+        self.last_limit_info.read().ok().and_then(|guard| *guard)
+    }
+
+    /// Internal: parse `Sforce-Limit-Info` from a response and stash
+    /// the latest value. Called from every send path on every attempt.
+    fn update_limit_info(&self, headers: &reqwest::header::HeaderMap) {
+        let Some(value) = headers.get("Sforce-Limit-Info") else {
+            return;
+        };
+        let Ok(s) = value.to_str() else { return };
+        let Some(info) = LimitInfo::parse(s) else {
+            return;
+        };
+        // Silently ignore poison — this is a best-effort stat surface,
+        // not load-bearing for any operation.
+        if let Ok(mut guard) = self.last_limit_info.write() {
+            *guard = Some(info);
+        }
     }
 
     /// Resolves a path to a fully-qualified URL using three-mode semantics:
@@ -304,20 +354,58 @@ impl Cloudburst {
         Q: Serialize + ?Sized,
         B: Serialize + ?Sized,
     {
+        // Cache the access token across the retry burst — token
+        // refresh on 401 is a separate concern (handled by AuthSession
+        // implementations that auto-refresh, or by future
+        // refresh-aware retry logic).
         let token = self.auth.access_token().await?;
-        let mut request = self.client.request(method, url).bearer_auth(&*token);
+        let mut attempt: u32 = 0;
 
-        if let Some(q) = query {
-            request = request.query(q);
-        }
-        if let Some(b) = body {
-            request = request.json(b);
-        }
+        loop {
+            let mut request = self
+                .client
+                .request(method.clone(), url)
+                .bearer_auth(&*token);
+            if let Some(q) = query {
+                request = request.query(q);
+            }
+            if let Some(b) = body {
+                request = request.json(b);
+            }
 
-        let response = request.send().await?;
-        let status = response.status().as_u16();
-        let bytes = response.bytes().await?;
-        response::parse_response_bytes(status, &bytes)
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let headers = response.headers().clone();
+                    self.update_limit_info(&headers);
+
+                    if retry::should_retry_status(&self.retry_policy, &method, status, attempt) {
+                        // Drain the body so the connection returns to
+                        // the pool clean. Errors here aren't actionable
+                        // — we're about to retry anyway.
+                        let _ = response.bytes().await;
+                        let retry_after = retry::parse_retry_after(&headers);
+                        let delay = retry::compute_delay(&self.retry_policy, attempt, retry_after);
+                        tokio::time::sleep(delay).await;
+                        attempt += 1;
+                        continue;
+                    }
+
+                    let bytes = response.bytes().await?;
+                    return response::parse_response_bytes(status, &bytes);
+                }
+                Err(e) => {
+                    let err: CloudburstError = e.into();
+                    if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
+                        let delay = retry::compute_delay(&self.retry_policy, attempt, None);
+                        tokio::time::sleep(delay).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
     }
 
     /// Sends a request with a raw body (e.g. CSV) and a custom Content-Type,
@@ -338,17 +426,48 @@ impl Cloudburst {
     {
         let url = self.resolve_url(path);
         let token = self.auth.access_token().await?;
-        let response = self
-            .client
-            .request(method, url)
-            .bearer_auth(&*token)
-            .header(reqwest::header::CONTENT_TYPE, content_type)
-            .body(body)
-            .send()
-            .await?;
-        let status = response.status().as_u16();
-        let bytes = response.bytes().await?;
-        response::parse_response_bytes(status, &bytes)
+        let mut attempt: u32 = 0;
+
+        loop {
+            // bytes::Bytes is Arc-backed — clone is cheap, doesn't copy
+            // the underlying buffer.
+            let request = self
+                .client
+                .request(method.clone(), &url)
+                .bearer_auth(&*token)
+                .header(reqwest::header::CONTENT_TYPE, content_type)
+                .body(body.clone());
+
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let headers = response.headers().clone();
+                    self.update_limit_info(&headers);
+
+                    if retry::should_retry_status(&self.retry_policy, &method, status, attempt) {
+                        let _ = response.bytes().await;
+                        let retry_after = retry::parse_retry_after(&headers);
+                        let delay = retry::compute_delay(&self.retry_policy, attempt, retry_after);
+                        tokio::time::sleep(delay).await;
+                        attempt += 1;
+                        continue;
+                    }
+
+                    let resp_bytes = response.bytes().await?;
+                    return response::parse_response_bytes(status, &resp_bytes);
+                }
+                Err(e) => {
+                    let err: CloudburstError = e.into();
+                    if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
+                        let delay = retry::compute_delay(&self.retry_policy, attempt, None);
+                        tokio::time::sleep(delay).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
     }
 
     /// Fetches a response as raw bytes (e.g. CSV) plus its headers, with
@@ -367,22 +486,51 @@ impl Cloudburst {
     ) -> CloudburstResult<(reqwest::header::HeaderMap, bytes::Bytes)> {
         let url = self.resolve_url(path);
         let token = self.auth.access_token().await?;
-        let mut request = self
-            .client
-            .request(method, url)
-            .bearer_auth(&*token)
-            .header(reqwest::header::ACCEPT, accept);
-        if let Some(q) = query {
-            request = request.query(q);
+        let mut attempt: u32 = 0;
+
+        loop {
+            let mut request = self
+                .client
+                .request(method.clone(), &url)
+                .bearer_auth(&*token)
+                .header(reqwest::header::ACCEPT, accept);
+            if let Some(q) = query {
+                request = request.query(q);
+            }
+
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let headers = response.headers().clone();
+                    self.update_limit_info(&headers);
+
+                    if retry::should_retry_status(&self.retry_policy, &method, status, attempt) {
+                        let _ = response.bytes().await;
+                        let retry_after = retry::parse_retry_after(&headers);
+                        let delay = retry::compute_delay(&self.retry_policy, attempt, retry_after);
+                        tokio::time::sleep(delay).await;
+                        attempt += 1;
+                        continue;
+                    }
+
+                    let bytes = response.bytes().await?;
+                    if (200..300).contains(&status) {
+                        return Ok((headers, bytes));
+                    }
+                    return Err(response::parse_error_response(status, &bytes));
+                }
+                Err(e) => {
+                    let err: CloudburstError = e.into();
+                    if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
+                        let delay = retry::compute_delay(&self.retry_policy, attempt, None);
+                        tokio::time::sleep(delay).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
         }
-        let response = request.send().await?;
-        let status = response.status().as_u16();
-        let headers = response.headers().clone();
-        let bytes = response.bytes().await?;
-        if (200..300).contains(&status) {
-            return Ok((headers, bytes));
-        }
-        Err(response::parse_error_response(status, &bytes))
     }
 }
 
@@ -396,6 +544,7 @@ pub struct CloudburstBuilder {
     api_version: Option<String>,
     user_agent: Option<String>,
     http_client: Option<reqwest::Client>,
+    retry_policy: Option<RetryPolicy>,
 }
 
 impl CloudburstBuilder {
@@ -428,6 +577,16 @@ impl CloudburstBuilder {
         self
     }
 
+    /// Sets the [`RetryPolicy`] for transient-failure handling.
+    /// Defaults to [`RetryPolicy::default`] (3 retries, exponential
+    /// backoff with full jitter, 100 ms base, 30 s cap, retry on
+    /// idempotent 5xx). Pass [`RetryPolicy::none`] to disable retries
+    /// entirely.
+    pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = Some(policy);
+        self
+    }
+
     /// Finalizes the builder.
     pub fn build(self) -> CloudburstResult<Cloudburst> {
         let auth = self.auth.ok_or(CloudburstError::MissingField("auth"))?;
@@ -454,6 +613,8 @@ impl CloudburstBuilder {
             api_version: self
                 .api_version
                 .unwrap_or_else(|| DEFAULT_API_VERSION.to_string()),
+            retry_policy: self.retry_policy.unwrap_or_default(),
+            last_limit_info: Arc::new(RwLock::new(None)),
         })
     }
 }
@@ -693,6 +854,302 @@ mod tests {
             assert_eq!(resp.status().as_u16(), 200);
             let body: Value = resp.json().await.unwrap();
             assert_eq!(body["raw"], true);
+        }
+    }
+
+    /// Retry policy + Sforce-Limit-Info header surfacing. Tests use a
+    /// retry policy with zero base/max delays so they don't sleep —
+    /// the retry behavior is what we're verifying, not the timing.
+    mod retry_and_limits {
+        use super::*;
+        use crate::RetryPolicy;
+        use serde_json::{Value, json};
+        use std::sync::Arc;
+        use std::time::Duration;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn fast_retry_policy() -> RetryPolicy {
+            RetryPolicy {
+                base_delay: Duration::ZERO,
+                max_delay: Duration::ZERO,
+                jitter: false,
+                ..RetryPolicy::default()
+            }
+        }
+
+        fn fixture_with_policy(uri: String, policy: RetryPolicy) -> Cloudburst {
+            let auth = Arc::new(StaticTokenAuth::new("tok", uri));
+            Cloudburst::builder()
+                .auth(auth)
+                .retry_policy(policy)
+                .build()
+                .unwrap()
+        }
+
+        #[tokio::test]
+        async fn retries_429_until_success() {
+            let server = MockServer::start().await;
+
+            // First two attempts return 429; third returns 200.
+            // wiremock matches mocks in registration order with priority,
+            // so we use `up_to_n_times` to scope the 429 mock to the
+            // first two requests.
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(ResponseTemplate::new(429))
+                .up_to_n_times(2)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+                .mount(&server)
+                .await;
+
+            let sf = fixture_with_policy(server.uri(), fast_retry_policy());
+            let v: Value = sf.get("limits").await.unwrap();
+            assert_eq!(v["ok"], true);
+        }
+
+        #[tokio::test]
+        async fn retries_503_until_success() {
+            let server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(ResponseTemplate::new(503))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+                .mount(&server)
+                .await;
+
+            let sf = fixture_with_policy(server.uri(), fast_retry_policy());
+            let v: Value = sf.get("limits").await.unwrap();
+            assert_eq!(v["ok"], true);
+        }
+
+        #[tokio::test]
+        async fn surfaces_error_after_max_retries_exhausted() {
+            let server = MockServer::start().await;
+
+            // Default policy retries 3 times → 4 total attempts.
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(ResponseTemplate::new(503).set_body_json(json!([{
+                    "errorCode": "SERVER_UNAVAILABLE",
+                    "message": "Service Unavailable"
+                }])))
+                .expect(4)
+                .mount(&server)
+                .await;
+
+            let sf = fixture_with_policy(server.uri(), fast_retry_policy());
+            let err = sf.get::<Value>("limits").await.unwrap_err();
+            match err {
+                CloudburstError::Api { status, .. } => assert_eq!(status, 503),
+                other => panic!("expected Api error, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn does_not_retry_4xx_caller_errors() {
+            let server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(json!([{
+                    "errorCode": "NOT_FOUND",
+                    "message": "not found"
+                }])))
+                // expect(1) — 4xx caller errors must not retry.
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let sf = fixture_with_policy(server.uri(), fast_retry_policy());
+            let err = sf.get::<Value>("limits").await.unwrap_err();
+            assert!(matches!(
+                err,
+                CloudburstError::Api { status: 404, .. }
+            ));
+        }
+
+        #[tokio::test]
+        async fn does_not_retry_500_on_post() {
+            // POST is non-idempotent — even on 5xx (other than 429/503)
+            // we must not retry, to avoid duplicate-record creation.
+            let server = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .and(path("/services/data/v60.0/sobjects/Account"))
+                .respond_with(ResponseTemplate::new(500).set_body_json(json!([{
+                    "errorCode": "INTERNAL_ERROR",
+                    "message": "boom"
+                }])))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let sf = fixture_with_policy(server.uri(), fast_retry_policy());
+            let err = sf
+                .post::<Value, _>("sobjects/Account", &json!({"Name": "Acme"}))
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                CloudburstError::Api { status: 500, .. }
+            ));
+        }
+
+        #[tokio::test]
+        async fn retries_500_on_get_when_idempotent_5xx_enabled() {
+            let server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(ResponseTemplate::new(500))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+                .mount(&server)
+                .await;
+
+            let sf = fixture_with_policy(server.uri(), fast_retry_policy());
+            let v: Value = sf.get("limits").await.unwrap();
+            assert_eq!(v["ok"], true);
+        }
+
+        #[tokio::test]
+        async fn none_policy_disables_retries_entirely() {
+            let server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(ResponseTemplate::new(429))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let sf = fixture_with_policy(server.uri(), RetryPolicy::none());
+            let err = sf.get::<Value>("limits").await.unwrap_err();
+            assert!(matches!(
+                err,
+                CloudburstError::Api { status: 429, .. }
+            ));
+        }
+
+        #[tokio::test]
+        async fn captures_sforce_limit_info_on_response() {
+            let server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(json!({"ok": true}))
+                        .insert_header("Sforce-Limit-Info", "api-usage=42/15000"),
+                )
+                .mount(&server)
+                .await;
+
+            let sf = fixture_with_policy(server.uri(), RetryPolicy::none());
+            // Before any request, no info captured.
+            assert!(sf.last_limit_info().is_none());
+
+            let _: Value = sf.get("limits").await.unwrap();
+
+            let info = sf.last_limit_info().expect("limit info should be set");
+            assert_eq!(info.used, 42);
+            assert_eq!(info.allowed, 15000);
+            assert_eq!(info.remaining(), 14958);
+        }
+
+        #[tokio::test]
+        async fn limit_info_updates_on_subsequent_requests() {
+            let server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(json!({"ok": true}))
+                        .insert_header("Sforce-Limit-Info", "api-usage=10/100"),
+                )
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(json!({"ok": true}))
+                        .insert_header("Sforce-Limit-Info", "api-usage=11/100"),
+                )
+                .mount(&server)
+                .await;
+
+            let sf = fixture_with_policy(server.uri(), RetryPolicy::none());
+            let _: Value = sf.get("limits").await.unwrap();
+            assert_eq!(sf.last_limit_info().unwrap().used, 10);
+            let _: Value = sf.get("limits").await.unwrap();
+            assert_eq!(sf.last_limit_info().unwrap().used, 11);
+        }
+
+        #[tokio::test]
+        async fn malformed_limit_info_header_is_ignored() {
+            let server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(json!({"ok": true}))
+                        // Wrong key, missing slash, etc. — just garbage.
+                        .insert_header("Sforce-Limit-Info", "junk-data=oops"),
+                )
+                .mount(&server)
+                .await;
+
+            let sf = fixture_with_policy(server.uri(), RetryPolicy::none());
+            let _: Value = sf.get("limits").await.unwrap();
+            // Header didn't parse → no info stored.
+            assert!(sf.last_limit_info().is_none());
+        }
+
+        #[tokio::test]
+        async fn retry_after_header_overrides_backoff() {
+            // The Retry-After hint, if present, takes precedence over
+            // the policy's exponential schedule. We don't test the
+            // *duration* directly (jitter would muddy that anyway) —
+            // we just verify the retry happens and the request count
+            // advances.
+            let server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(
+                    ResponseTemplate::new(429).insert_header("Retry-After", "0"),
+                )
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/services/data/v60.0/limits"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+                .mount(&server)
+                .await;
+
+            let sf = fixture_with_policy(server.uri(), fast_retry_policy());
+            let v: Value = sf.get("limits").await.unwrap();
+            assert_eq!(v["ok"], true);
         }
     }
 }

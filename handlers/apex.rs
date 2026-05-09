@@ -358,9 +358,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path(
-                "/services/apexrest/Cases/500xx0000000001/comments",
-            ))
+            .and(path("/services/apexrest/Cases/500xx0000000001/comments"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([
                 {"author": "ryf", "text": "first"},
                 {"author": "other", "text": "second"}

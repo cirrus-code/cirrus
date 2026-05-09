@@ -189,9 +189,8 @@ impl<R: DeserializeOwned + Send + Unpin + 'static> Stream for Records<R> {
                     // finish, if the locator is None).
                     if let Some(next_url) = next.take() {
                         let client = this.client.clone();
-                        let fut: PageFuture<R> = Box::pin(async move {
-                            client.query_more_as::<R>(&next_url).await
-                        });
+                        let fut: PageFuture<R> =
+                            Box::pin(async move { client.query_more_as::<R>(&next_url).await });
                         this.state = State::Fetching(fut);
                     } else {
                         this.state = State::Done;
@@ -217,8 +216,15 @@ mod tests {
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
     fn fixture(uri: String) -> Cloudburst {
+        // Disable retries so error-path tests can assert exact call
+        // counts. Retry behavior gets its own dedicated tests in
+        // retry.rs / lib.rs.
         let auth = Arc::new(StaticTokenAuth::new("tok", uri));
-        Cloudburst::builder().auth(auth).build().unwrap()
+        Cloudburst::builder()
+            .auth(auth)
+            .retry_policy(crate::RetryPolicy::none())
+            .build()
+            .unwrap()
     }
 
     /// A response that echoes a single page with no `nextRecordsUrl` —

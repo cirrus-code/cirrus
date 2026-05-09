@@ -480,7 +480,9 @@ mod tests {
             .and(path(
                 "/services/data/v60.0/tooling/sobjects/ApexClass/01p000000000001",
             ))
-            .and(body_json(json!({"Body": "public class MyClass { /* v2 */ }"})))
+            .and(body_json(
+                json!({"Body": "public class MyClass { /* v2 */ }"}),
+            ))
             .respond_with(ResponseTemplate::new(204))
             .mount(&server)
             .await;
@@ -635,10 +637,7 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/services/data/v60.0/tooling/executeAnonymous"))
-            .and(query_param(
-                "anonymousBody",
-                "System.debug('hello world');",
-            ))
+            .and(query_param("anonymousBody", "System.debug('hello world');"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "compiled": true,
                 "compileProblem": null,
@@ -684,11 +683,7 @@ mod tests {
             .await;
 
         let sf = fixture(server.uri());
-        let res = sf
-            .tooling()
-            .execute_anonymous("foo.bar();")
-            .await
-            .unwrap();
+        let res = sf.tooling().execute_anonymous("foo.bar();").await.unwrap();
         assert!(!res.compiled);
         assert!(!res.success);
         assert_eq!(

@@ -232,10 +232,12 @@ mod tests {
             .and(path(
                 "/services/data/v60.0/sobjects/EventLogFile/0ATmissing/LogFile",
             ))
-            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!([{
-                "errorCode": "NOT_FOUND",
-                "message": "The requested resource does not exist"
-            }])))
+            .respond_with(
+                ResponseTemplate::new(404).set_body_json(serde_json::json!([{
+                    "errorCode": "NOT_FOUND",
+                    "message": "The requested resource does not exist"
+                }])),
+            )
             .mount(&server)
             .await;
 

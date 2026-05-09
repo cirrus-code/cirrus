@@ -8,7 +8,7 @@
 - API surface: Phase 1 + entire composite family + Bulk 2.0 + Apex REST + Tooling API + Event Monitoring shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=, =composite/sobjects=, =composite=, =bulk().ingest()=, =bulk().query()=, =apex().{get,post,put,patch,delete}=, =tooling().{describe_global,sobject().*,query,search,execute_anonymous}=, =event_monitoring().{download,download_url}= + =EventLogFileRecord=.
 - Open-ended client escape hatch shipped: =get= / =get_with_query= / =post= / =put= / =patch= / =delete= / =request_builder= / =execute= on =Cloudburst= with three-mode path resolution.
 - Raw-body transport helpers shipped (=send_with_body= for CSV uploads, =fetch_raw= for CSV downloads with pagination headers). =parse_error_response= extracted from =parse_response_bytes= to share error-array parsing across both transport paths.
-- Test count baseline: 218 unit + 2 doctest, all passing; clippy clean.
+- Test count baseline: 247 unit + 2 doctest, all passing; clippy clean.
 
 * Design principle: open-ended client (octocrab-style escape hatch)
 :PROPERTIES:
@@ -248,7 +248,7 @@ either typed JSON or =serde_json::Value=.
 - [ ] Automotive Cloud
 - [ ] Media Cloud
 
-* Cross-cutting infrastructure [2/10]
+* Cross-cutting infrastructure [4/10]
 ** DONE Open-ended client escape hatch
 - Public =get= / =get_with_query= / =post= / =put= / =patch= / =delete= on =Cloudburst=, plus =request_builder(method, path)= (auth-injected) and =execute(reqwest::Request)= (hands-off) for full bypass.
 - Three-mode path resolution in =Cloudburst::resolve_url=: relative → versioned, leading-=/= → instance-rooted, =http(s)://= → passthrough. Locks in the [[*Design principle: open-ended client (octocrab-style escape hatch)][design-principle contract]].
@@ -263,8 +263,21 @@ either typed JSON or =serde_json::Value=.
 - *Not* covered: Bulk 2.0 query results (different cursor shape — =Sforce-Locator= header carrying literal "null" — and CSV bytes vs JSON records). A separate stream type would be needed; documented in the module-level comment as deliberately deferred.
 - 8 wiremock tests covering single-page, 3-page paginated, mid-stream error, drop-after-page-1 (no extra fetch), typed deserialization, =/queryAll= variant, Tooling-prefixed locator follow-ups, and buffer-then-fetch sequencing via atomic counter.
 ** TODO Standardize handler module template (request → builder → execute → typed response)
-** TODO Retry + backoff policy (=429=, =503=, transient =5xx=)
-** TODO Rate-limit header surfacing (=Sforce-Limit-Info=)
+** DONE Retry + backoff policy (=429=, =503=, transient =5xx=)
+- New top-level =retry= module exposing =RetryPolicy= struct (max_retries, base_delay, max_delay, jitter, retry_idempotent_5xx) with sensible defaults (3 retries, 100 ms base, 30 s cap, full jitter via =getrandom::fill=, retry idempotent 5xx).
+- =RetryPolicy::default()= for the standard policy; =RetryPolicy::none()= to disable retries entirely.
+- Configured via =CloudburstBuilder::retry_policy()=. Stored on =Cloudburst=; reachable via =client.retry_policy()=.
+- Wired into all three send paths (=send=, =send_with_body=, =fetch_raw=) via inline retry loops. On retry, the response body is drained before sleeping so the connection returns to the pool clean.
+- *Per-status semantics:* 429 / 503 retried for any method (server explicitly says "didn't happen"); 500 / 502 / 504 retried only on idempotent methods (GET, HEAD, DELETE, PUT, OPTIONS, TRACE) when =retry_idempotent_5xx= is true; other 4xx never retried (caller errors); 401 deliberately out of scope (separate item — auto-refresh on 401).
+- *Per-network-error semantics:* network-level reqwest errors retried only on idempotent methods (avoid duplicate-effect on POST/PATCH if a request succeeded server-side but the response was lost).
+- =Retry-After= header (RFC 7231 §7.1.3 delta-seconds form) honored when present, capped at =max_delay=. HTTP-date variant deliberately not parsed (would need =httpdate= dep; Salesforce documents only the integer form).
+- Sleep via =tokio::time::sleep=. Doesn't change consumer runtime story — reqwest already requires a Tokio runtime context to function. Added =time= feature to existing =tokio= dep.
+- 14 unit tests in =retry= module + 8 integration tests in =lib::tests::retry_and_limits= covering 429-success, 503-success, max-retries-exhaustion, 4xx-no-retry, 500-on-POST-no-retry, 500-on-GET-retry, =RetryPolicy::none= disabling retries, =Retry-After= override.
+** DONE Rate-limit header surfacing (=Sforce-Limit-Info=)
+- New =LimitInfo= struct in =response= module with =parse(header_value)= and =remaining()= helpers. Models =Sforce-Limit-Info: api-usage=<used>/<allowed>= shape per the documented header. Returns =None= for malformed input.
+- Captured automatically on every response in all three send paths via internal =Cloudburst::update_limit_info=. Stored in =Arc<RwLock<Option<LimitInfo>>>= on the client; cloned clients share state.
+- Public getter =Cloudburst::last_limit_info() -> Option<LimitInfo>=. Same surfacing pattern jsforce uses for =Connection.limitInfo=.
+- 4 unit tests for =LimitInfo::parse= (well-formed, whitespace tolerance, malformed, saturating remaining) + 3 integration tests in =retry_and_limits= covering capture, update-on-subsequent, malformed-header-ignored.
 ** TODO API version selection / negotiation (default to "latest seen", allow override)
 ** TODO Conditional requests (=If-Modified-Since=, =If-Match=) where Salesforce honors them
 ** TODO Tracing / =tracing= integration (replacing the lint ban on =println!=)

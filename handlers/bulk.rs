@@ -191,11 +191,7 @@ impl BulkIngestHandler<'_> {
         self.fetch_csv_results(job_id, "unprocessedrecords").await
     }
 
-    async fn patch_state(
-        &self,
-        job_id: &str,
-        new_state: &str,
-    ) -> CloudburstResult<BulkIngestJob> {
+    async fn patch_state(&self, job_id: &str, new_state: &str) -> CloudburstResult<BulkIngestJob> {
         let path = self
             .client
             .versioned_segments(&["jobs", "ingest", job_id])?;
@@ -205,11 +201,7 @@ impl BulkIngestHandler<'_> {
             .await
     }
 
-    async fn fetch_csv_results(
-        &self,
-        job_id: &str,
-        kind: &str,
-    ) -> CloudburstResult<bytes::Bytes> {
+    async fn fetch_csv_results(&self, job_id: &str, kind: &str) -> CloudburstResult<bytes::Bytes> {
         let path = self
             .client
             .versioned_segments(&["jobs", "ingest", job_id, kind])?;
@@ -341,7 +333,10 @@ pub struct BulkIngestSpec {
     pub operation: BulkOperation,
     /// External ID field name. Required when `operation` is `Upsert`,
     /// must be `None` for the other operations.
-    #[serde(rename = "externalIdFieldName", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "externalIdFieldName",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub external_id_field_name: Option<String>,
     /// CSV line ending. Defaults server-side to `LF` when `None`.
     #[serde(rename = "lineEnding", skip_serializing_if = "Option::is_none")]
@@ -598,7 +593,12 @@ mod tests {
             .await;
 
         let sf = fixture(server.uri());
-        let bytes = sf.bulk().ingest().successful_results("750xx").await.unwrap();
+        let bytes = sf
+            .bulk()
+            .ingest()
+            .successful_results("750xx")
+            .await
+            .unwrap();
         assert_eq!(&bytes[..], csv.as_bytes());
     }
 

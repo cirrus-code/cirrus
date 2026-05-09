@@ -100,6 +100,52 @@ pub struct Limit {
 /// Top-level response from `GET /limits` — keys are limit names.
 pub type OrgLimits = HashMap<String, Limit>;
 
+/// Snapshot of the `Sforce-Limit-Info` response header, parsed.
+///
+/// Salesforce includes this header on most REST API responses to
+/// surface the org's near-real-time API call usage:
+///
+/// ```text
+/// Sforce-Limit-Info: api-usage=10/15000
+/// ```
+///
+/// Populated automatically on every successful round-trip; the most
+/// recent value is reachable via [`crate::Cloudburst::last_limit_info`].
+/// Same surfacing pattern jsforce uses for `Connection.limitInfo`.
+///
+/// The percentages-used / `Sforce-Limit-Info` header is documented
+/// at [REST API Headers — Sforce-Limit-Info]. We only model the
+/// `api-usage` key here; if Salesforce adds others (per-app usage,
+/// streaming usage), they'll need their own parsers.
+///
+/// [REST API Headers — Sforce-Limit-Info]: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/headers_limit_info.htm
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LimitInfo {
+    /// API calls used by this org in the current 24-hour rolling
+    /// window.
+    pub used: u32,
+    /// Daily API call allocation for this org.
+    pub allowed: u32,
+}
+
+impl LimitInfo {
+    /// Parses a raw `Sforce-Limit-Info` header value, e.g.
+    /// `"api-usage=10/15000"`. Returns `None` for any malformed shape
+    /// — typoed key, non-numeric counts, missing slash, etc.
+    pub fn parse(header_value: &str) -> Option<Self> {
+        let rest = header_value.trim().strip_prefix("api-usage=")?;
+        let (used, allowed) = rest.split_once('/')?;
+        let used = used.trim().parse::<u32>().ok()?;
+        let allowed = allowed.trim().parse::<u32>().ok()?;
+        Some(Self { used, allowed })
+    }
+
+    /// Convenience: API calls remaining (`allowed - used`, saturating).
+    pub fn remaining(&self) -> u32 {
+        self.allowed.saturating_sub(self.used)
+    }
+}
+
 /// Response from `GET /sobjects` (describe global). Schema-independent
 /// platform metadata — concrete because every org returns the same shape.
 #[derive(Debug, Clone, Deserialize)]
@@ -1123,7 +1169,10 @@ mod tests {
         assert_eq!(job.state, BulkJobState::JobComplete);
         assert_eq!(job.line_ending, BulkLineEnding::CRLF);
         assert_eq!(job.column_delimiter, BulkColumnDelimiter::Tab);
-        assert_eq!(job.external_id_field_name.as_deref(), Some("External_Id__c"));
+        assert_eq!(
+            job.external_id_field_name.as_deref(),
+            Some("External_Id__c")
+        );
         assert_eq!(job.number_records_processed, Some(1000));
         assert_eq!(job.number_records_failed, Some(5));
         assert!(job.error_message.is_none());
@@ -1430,5 +1479,45 @@ mod tests {
         assert!(parsed.success);
         assert!(parsed.errors.is_empty());
         assert!(parsed.created.is_none());
+    }
+
+    #[test]
+    fn limit_info_parses_well_formed_header() {
+        let info = LimitInfo::parse("api-usage=42/15000").unwrap();
+        assert_eq!(info.used, 42);
+        assert_eq!(info.allowed, 15000);
+        assert_eq!(info.remaining(), 14958);
+    }
+
+    #[test]
+    fn limit_info_tolerates_whitespace_around_value() {
+        let info = LimitInfo::parse("api-usage= 42 / 15000 ").unwrap();
+        assert_eq!(info.used, 42);
+        assert_eq!(info.allowed, 15000);
+    }
+
+    #[test]
+    fn limit_info_returns_none_on_malformed_input() {
+        // Wrong key.
+        assert_eq!(LimitInfo::parse("foo=1/2"), None);
+        // Missing slash separator.
+        assert_eq!(LimitInfo::parse("api-usage=10"), None);
+        // Non-numeric values.
+        assert_eq!(LimitInfo::parse("api-usage=ten/fifteen"), None);
+        // Empty.
+        assert_eq!(LimitInfo::parse(""), None);
+        // Negative — not parseable as u32.
+        assert_eq!(LimitInfo::parse("api-usage=-5/100"), None);
+    }
+
+    #[test]
+    fn limit_info_remaining_saturates() {
+        // If somehow `used > allowed`, `remaining()` saturates rather
+        // than overflowing (u32 underflow).
+        let info = LimitInfo {
+            used: 100,
+            allowed: 50,
+        };
+        assert_eq!(info.remaining(), 0);
     }
 }

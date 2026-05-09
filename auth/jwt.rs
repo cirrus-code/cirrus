@@ -160,6 +160,18 @@ impl AuthSession for JwtAuth {
     fn instance_url(&self) -> &str {
         &self.instance_url
     }
+
+    async fn invalidate(&self, stale_token: &str) {
+        // Compare-and-swap: only clear the cached token if it still
+        // matches what the failing request used. Avoids racing with a
+        // concurrent task that already refreshed.
+        let mut guard = self.cached.write().await;
+        if let Some(cached) = guard.as_ref()
+            && cached.access_token == stale_token
+        {
+            *guard = None;
+        }
+    }
 }
 
 /// Builder for [`JwtAuth`].
@@ -504,6 +516,58 @@ mod tests {
 
         let err = auth.access_token().await.unwrap_err();
         assert!(matches!(err, CloudburstError::Auth(_)));
+    }
+
+    /// `invalidate(stale_token)` is a compare-and-swap: it should
+    /// only clear the cached token when the cached value matches
+    /// `stale_token`. This is the contract for all three flows
+    /// (Jwt, Refresh, ClientCredentials); we test it here as the
+    /// canonical example since the impls are identical.
+    #[tokio::test]
+    async fn invalidate_clears_cache_only_when_stale_token_matches() {
+        let server = MockServer::start().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+        let body = serde_json::json!({
+            "access_token": "T1",
+            "instance_url": "https://my-org.my.salesforce.com",
+            "token_type": "Bearer",
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/services/oauth2/token"))
+            .respond_with(CountingResponder {
+                hits: hits.clone(),
+                response: ResponseTemplate::new(200).set_body_json(body),
+            })
+            .mount(&server)
+            .await;
+
+        let auth = builder_with_required_fields()
+            .login_url(server.uri())
+            .build()
+            .unwrap();
+
+        // First call mints T1; cache populated.
+        let t = auth.access_token().await.unwrap();
+        assert_eq!(&*t, "T1");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        drop(t);
+
+        // Invalidate with a *non-matching* stale_token — should be a
+        // no-op, cache stays populated.
+        auth.invalidate("not-the-cached-token").await;
+        let t = auth.access_token().await.unwrap();
+        assert_eq!(&*t, "T1");
+        // No re-mint — the cache wasn't cleared.
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        drop(t);
+
+        // Invalidate with the *matching* stale_token — clears cache.
+        auth.invalidate("T1").await;
+        // Next access call must re-mint.
+        let t = auth.access_token().await.unwrap();
+        assert_eq!(&*t, "T1"); // mock still returns T1
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
 
     /// Wraps a [`ResponseTemplate`] and counts invocations. Wiremock's

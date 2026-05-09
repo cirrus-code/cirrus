@@ -70,6 +70,34 @@ pub trait AuthSession: Send + Sync {
     /// Returns the instance URL for REST requests, e.g.
     /// `https://my-org.my.salesforce.com`. No trailing slash.
     fn instance_url(&self) -> &str;
+
+    /// Invalidates a cached token that the SDK has determined is no
+    /// longer valid (typically because Salesforce returned 401
+    /// `INVALID_SESSION_ID` when it was used).
+    ///
+    /// The next [`access_token`](Self::access_token) call should mint
+    /// a fresh token. The `stale_token` parameter lets implementations
+    /// compare-and-swap — only clear the cache if the cached value
+    /// still matches what the caller actually used. This avoids
+    /// blowing away a *newer* token that another concurrent task may
+    /// have refreshed in the meantime.
+    ///
+    /// Default impl is a no-op for static or stateless sessions
+    /// ([`crate::auth::StaticTokenAuth`]) where there is nothing to
+    /// invalidate. Stateful flows ([`crate::auth::JwtAuth`],
+    /// [`crate::auth::RefreshTokenAuth`],
+    /// [`crate::auth::ClientCredentialsAuth`]) override to clear
+    /// their cached token.
+    ///
+    /// `stale_token` is borrowed for the duration of the call only —
+    /// implementations should compare it against their cached value
+    /// and not retain it.
+    async fn invalidate(&self, stale_token: &str) {
+        // Default: nothing to invalidate. Suppress the unused-arg
+        // warning on the default impl without requiring overriders to
+        // bind a different name.
+        let _ = stale_token;
+    }
 }
 
 /// `Arc<dyn AuthSession>` — the shape stored inside the client.

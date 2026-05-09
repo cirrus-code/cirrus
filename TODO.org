@@ -8,7 +8,7 @@
 - API surface: Phase 1 + entire composite family + Bulk 2.0 + Apex REST + Tooling API + Event Monitoring shipped — =versions=, =limits=, =describe_global=, =sobject= CRUD + describe, =query= / =query_all= / =query_more=, =search= / =parameterized_search=, =composite/batch=, =composite/tree=, =composite/sobjects=, =composite=, =bulk().ingest()=, =bulk().query()=, =apex().{get,post,put,patch,delete}=, =tooling().{describe_global,sobject().*,query,search,execute_anonymous}=, =event_monitoring().{download,download_url}= + =EventLogFileRecord=.
 - Open-ended client escape hatch shipped: =get= / =get_with_query= / =post= / =put= / =patch= / =delete= / =request_builder= / =execute= on =Cloudburst= with three-mode path resolution.
 - Raw-body transport helpers shipped (=send_with_body= for CSV uploads, =fetch_raw= for CSV downloads with pagination headers). =parse_error_response= extracted from =parse_response_bytes= to share error-array parsing across both transport paths.
-- Test count baseline: 247 unit + 2 doctest, all passing; clippy clean.
+- Test count baseline: 252 unit + 2 doctest, all passing; clippy clean.
 
 * Design principle: open-ended client (octocrab-style escape hatch)
 :PROPERTIES:
@@ -248,7 +248,7 @@ either typed JSON or =serde_json::Value=.
 - [ ] Automotive Cloud
 - [ ] Media Cloud
 
-* Cross-cutting infrastructure [4/10]
+* Cross-cutting infrastructure [5/11]
 ** DONE Open-ended client escape hatch
 - Public =get= / =get_with_query= / =post= / =put= / =patch= / =delete= on =Cloudburst=, plus =request_builder(method, path)= (auth-injected) and =execute(reqwest::Request)= (hands-off) for full bypass.
 - Three-mode path resolution in =Cloudburst::resolve_url=: relative → versioned, leading-=/= → instance-rooted, =http(s)://= → passthrough. Locks in the [[*Design principle: open-ended client (octocrab-style escape hatch)][design-principle contract]].
@@ -278,6 +278,13 @@ either typed JSON or =serde_json::Value=.
 - Captured automatically on every response in all three send paths via internal =Cloudburst::update_limit_info=. Stored in =Arc<RwLock<Option<LimitInfo>>>= on the client; cloned clients share state.
 - Public getter =Cloudburst::last_limit_info() -> Option<LimitInfo>=. Same surfacing pattern jsforce uses for =Connection.limitInfo=.
 - 4 unit tests for =LimitInfo::parse= (well-formed, whitespace tolerance, malformed, saturating remaining) + 3 integration tests in =retry_and_limits= covering capture, update-on-subsequent, malformed-header-ignored.
+** DONE Auto-refresh on 401 (=AuthSession::invalidate=)
+- Added =async fn invalidate(&self, stale_token: &str)= to =AuthSession= trait with default no-op (covers =StaticTokenAuth= and any user-supplied static-credential impl).
+- Overridden on =JwtAuth=, =RefreshTokenAuth=, =ClientCredentialsAuth=. Each clears its cached token *only if* the cached value matches =stale_token= — compare-and-swap semantics that avoid blowing away a token a concurrent task may have already refreshed.
+- All three send paths (=send=, =send_with_body=, =fetch_raw=) wrap the existing transient-retry loop in an outer auth-retry loop. On 401: =auth.invalidate(stale)=, =auth.access_token()= for a fresh one, retry once with the new token. If the fresh token is *identical* to the stale one (auth couldn't refresh — e.g. =StaticTokenAuth=), surface the 401 verbatim instead of looping.
+- Cap of 1 auth-retry per call. A second 401 after refresh means the issue isn't token expiry (permission / scope problem); surface it.
+- Distinct from =RetryPolicy=: auto-refresh is always-on, not configurable. Token expiry isn't a "transient failure" in the retry-policy sense; it's an auth-layer concern that the SDK should handle transparently regardless of how aggressively the user tuned retries.
+- 4 integration tests in =lib::tests::auth_refresh= using a custom =RotatingAuth= test fixture that yields different tokens per call: 401-then-200 succeeds with new token; 401 with same-token-after-refresh surfaces (no infinite loop); two consecutive 401s surface (cap respected); non-401 errors don't trigger invalidation. Plus 1 unit test in =auth::jwt= verifying compare-and-swap behavior at the trait level.
 ** TODO API version selection / negotiation (default to "latest seen", allow override)
 ** TODO Conditional requests (=If-Modified-Since=, =If-Match=) where Salesforce honors them
 ** TODO Tracing / =tracing= integration (replacing the lint ban on =println!=)

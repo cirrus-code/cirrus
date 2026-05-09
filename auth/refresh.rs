@@ -140,6 +140,19 @@ impl AuthSession for RefreshTokenAuth {
     fn instance_url(&self) -> &str {
         &self.instance_url
     }
+
+    async fn invalidate(&self, stale_token: &str) {
+        // Compare-and-swap: only clear the cached access token if it
+        // still matches what the failing request used. The underlying
+        // refresh_token isn't affected — we only ever want the
+        // *short-lived* access token re-minted.
+        let mut guard = self.cached.write().await;
+        if let Some(cached) = guard.as_ref()
+            && cached.access_token == stale_token
+        {
+            *guard = None;
+        }
+    }
 }
 
 /// Builder for [`RefreshTokenAuth`].

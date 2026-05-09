@@ -124,6 +124,18 @@ impl AuthSession for ClientCredentialsAuth {
     fn instance_url(&self) -> &str {
         &self.instance_url
     }
+
+    async fn invalidate(&self, stale_token: &str) {
+        // Compare-and-swap: only clear the cached token if it still
+        // matches what the failing request used. Avoids racing with a
+        // concurrent task that already refreshed.
+        let mut guard = self.cached.write().await;
+        if let Some(cached) = guard.as_ref()
+            && cached.access_token == stale_token
+        {
+            *guard = None;
+        }
+    }
 }
 
 /// Builder for [`ClientCredentialsAuth`].

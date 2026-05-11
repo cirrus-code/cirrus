@@ -89,7 +89,7 @@ cp .env.example .env
 cargo nextest run --test integration --run-ignored only -- --test-threads=1
 ```
 
-The harness (`tests/integration/common.rs`) refuses to run unless `INSTANCE_URL` matches a known sandbox/dev/scratch My Domain pattern (`.sandbox.`, `.develop.`, or `.scratch.` infix before `.my.salesforce.com`). Override with `CLOUDBURST_INTEGRATION_FORCE=1` only after verifying the target org is safe for destructive writes — the safe-list catches Enhanced Domains URLs but not legacy pre-Spring-'23 sandbox URLs.
+The harness (`tests/integration/common.rs`) refuses to run unless `INSTANCE_URL` matches a known sandbox/dev/scratch My Domain pattern: `.sandbox.`, `.develop.`, `.scratch.`, or `.trailblaze.` infix before `.my.salesforce.com`. The `.trailblaze.` partition is used by free Developer Edition orgs from developer.salesforce.com signup (subdomain ends in `-dev-ed`). Override with `CLOUDBURST_INTEGRATION_FORCE=1` only after verifying the target org is safe for destructive writes — the safe-list catches Enhanced Domains URLs but not legacy pre-Spring-'23 sandbox URLs, and Salesforce occasionally introduces new partition infixes (audit when adding orgs in unfamiliar shapes).
 
 Auth supports two paths: paste a static token from `sf org display`, or configure JWT bearer flow with a connected app + private key. Static-token mode is the easy bootstrap; JWT exercises the full auth flow.
 

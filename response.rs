@@ -728,15 +728,16 @@ pub struct SObjectCollectionResult {
 ///
 /// # Wire-shape provenance
 ///
-/// **The JSON wire shape of the REST `executeAnonymous` response is not
-/// documented in Salesforce's public REST docs.** Salesforce ships a
-/// SOAP `ExecuteAnonymousResult` complex type whose fields these names
-/// mirror (`compiled`, `compileProblem`, `success`, `line`, `column`,
-/// `exceptionMessage`, `exceptionStackTrace`); the Tooling REST API
-/// historically serializes that SOAP type as JSON via standard
-/// camelCase conversion. Until live integration tests verify against a
-/// real org, treat field names here as best-effort. If a real-org test
-/// reveals a divergence, this struct is the canonical place to fix it.
+/// **Verified against a live Developer Edition org** (see
+/// `tests/integration/tooling.rs` — three tests covering clean run,
+/// compile error, and runtime error). Field names
+/// (`compiled`, `compileProblem`, `success`, `line`, `column`,
+/// `exceptionMessage`, `exceptionStackTrace`) and the `-1` no-error
+/// sentinel for `line`/`column` were all confirmed end-to-end. The
+/// JSON wire shape itself remains undocumented in Salesforce's public
+/// REST reference — these fields mirror the SOAP
+/// `ExecuteAnonymousResult` complex type, which the Tooling REST API
+/// serializes via standard camelCase conversion.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExecuteAnonymousResult {
     /// `true` if the Apex source compiled. `false` indicates a syntax

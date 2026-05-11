@@ -151,12 +151,15 @@ async fn sforce_limit_info_header_is_captured() {
     // Before any request, last_limit_info should be None.
     assert!(sf.last_limit_info().is_none());
 
-    // Any successful API call should populate it (the header is on
-    // most REST responses).
-    let _ = sf.versions().await.unwrap();
+    // The Sforce-Limit-Info header is only set on *versioned* API
+    // responses — the pre-version-resolution `/services/data`
+    // discovery endpoint (i.e. `sf.versions()`) doesn't emit it, since
+    // it doesn't count against API request quota. Use `limits()` —
+    // that's a versioned call that always touches the quota.
+    let _ = sf.limits().await.unwrap();
     let info = sf
         .last_limit_info()
-        .expect("expected Sforce-Limit-Info to be captured after first call");
+        .expect("expected Sforce-Limit-Info to be captured after first versioned call");
     assert!(
         info.allowed > 0,
         "limit-info allowed should be positive, got {}",

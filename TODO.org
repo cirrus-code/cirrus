@@ -343,19 +343,21 @@ either typed JSON or =serde_json::Value=.
 - *Effort:* Small. ~1 day to add =proptest=, write ~5 properties, integrate with =cargo nextest=.
 
 ** IN-PROGRESS Live integration tests against a Salesforce dev/scratch org [#A]
-- *Harness shipped:* =tests/integration.rs= entry binary + =tests/integration/common.rs= helper + =tests/integration/smoke.rs= initial test set. All =#[ignore]=-gated so default =cargo test= doesn't touch the network.
+- *Harness shipped:* =tests/integration.rs= entry binary + =tests/integration/{common,smoke,sobjects,query,composite,tooling}.rs=. All =#[ignore]=-gated so default =cargo test= doesn't touch the network.
+- *Verified against live Dev Edition org (2026-05-11):* 23 of 23 tests passing in ~12s wall time.
 - *Configuration:* =.env= (gitignored) or shell environment. Required: =CLOUDBURST_INTEGRATION=1= + =CLOUDBURST_INTEGRATION_INSTANCE_URL=. Auth via either static token (=CLOUDBURST_INTEGRATION_ACCESS_TOKEN=) or JWT bearer flow (4 vars: username, consumer key, private key path, login URL). =.env.example= committed at repo root.
-- *Safety guard:* =is_safe_test_url= in =common.rs= — refuses to run unless URL contains =.sandbox.=, =.develop.=, or =.scratch.= before =.my.salesforce.com=. Per Salesforce's Enhanced Domains documentation (mandatory since Spring '23). Override via =CLOUDBURST_INTEGRATION_FORCE=1=. Four classifier unit tests verify accept/refuse behavior.
-- *Initial smoke suite (6 tests, all ignored):* =versions= returns nonempty list with valid shape; numeric ordering via =version_number()= round-trips against real data; =latest_api_version= returns =vN.M= format; =build_with_latest_version= reconfigures correctly; =limits= contains =DailyApiRequests=; =Sforce-Limit-Info= captured post-call.
-- *Run:* =cargo nextest run --test integration --run-ignored only -- --test-threads=1=. Sequential to avoid Daily API Request quota collisions on shared dev orgs.
-- *Pending the user setting up a dev sandbox:* the harness can be exercised today (env-not-set tests skip cleanly), but the actual smoke verification waits for a real org URL + token.
-- *Future test modules to add (deferred until smoke is verified working):*
-  - =sobjects.rs= — full CRUD cycle on Account with best-effort cleanup; describe-global =if_modified_since= 200 + 304 branches.
-  - =query.rs= — paginated query (>2000 records), =query_stream= consumption, =query_more= follow-up.
+- *Safety guard:* =is_safe_test_url= in =common.rs= — refuses to run unless URL contains =.sandbox.=, =.develop.=, =.scratch.=, or =.trailblaze.= before =.my.salesforce.com=. =.trailblaze.= is the partition for free Dev Edition orgs from developer.salesforce.com signup. Override via =CLOUDBURST_INTEGRATION_FORCE=1=. Classifier unit tests verify accept/refuse for all known patterns including production My Domains and legacy pre-Enhanced-Domains URLs.
+- *Shipped test modules:*
+  - =smoke.rs= (6 tests) — versions, limits, version-negotiation, Sforce-Limit-Info capture (verified =/services/data= is exempt from limit-info headers; uses =/limits= instead).
+  - =sobjects.rs= (4 tests) — full CRUD cycle (create → retrieve → update → delete) with RAII cleanup guard via =tokio::task::block_in_place=; typed + untyped retrieve; describe-global + per-object describe verifying real wire shape.
+  - =query.rs= (5 tests) — basic query envelope; typed query; stream termination on small result; stream-matches-eager-result over 4 planted records; =queryAll= surfaces soft-deleted records that plain =query= filters out.
+  - =composite.rs= (3 tests) — =composite/sobjects= create+delete (3-record bulk); =composite/batch= with =limits= + =Account/describe= subrequests; typed retrieve via =composite/sobjects= GET.
+  - =tooling.rs= (5 tests) — Tooling =describe_global= and Tooling =query=. *Critical:* three =executeAnonymous= tests verified the previously-unverified wire shape (=compileProblem=, =exceptionMessage=, =exceptionStackTrace=, =-1= no-error sentinel for =line=/=column=). Docstring updated in =response.rs= to reflect verification.
+- *Run:* =cargo nextest run --test integration --run-ignored only -j 1=.
+- *Future test modules:*
   - =bulk.rs= — Bulk 2.0 ingest CSV + query.
-  - =composite.rs= — composite/batch + composite/sobjects.
-  - =tooling.rs= — tooling.query on ApexClass; =execute_anonymous= happy path + compile-error path (THE one with unverified wire shape).
   - =auth.rs= — JWT round-trip (only if JWT mode configured).
+  - =event_monitoring.rs= — would need to plant an EventLogFile, harder to make reliable.
 - *What:* End-to-end tests that hit a real Salesforce org over HTTPS, gated behind an environment variable so they never run in default CI.
   - Suggested gate: =CLOUDBURST_INTEGRATION=1= + =CLOUDBURST_INTEGRATION_INSTANCE_URL= + a token (from a sops-encrypted file or =.env=).
   - Place under =tests/integration/= as a separate test target with =#[ignore]= on every test, opted in via =cargo nextest run --run-ignored only=.

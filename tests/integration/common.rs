@@ -37,8 +37,10 @@
 //! Enhanced Domains][enh] documentation):
 //!
 //! - `.sandbox.my.salesforce.com` — sandboxes
-//! - `.develop.my.salesforce.com` — Developer Edition + Trailhead Playground
-//! - `.scratch.my.salesforce.com` — scratch orgs
+//! - `.develop.my.salesforce.com` — Trailhead Playgrounds, newer dev orgs
+//! - `.scratch.my.salesforce.com` — scratch orgs (sfdx CLI)
+//! - `.trailblaze.my.salesforce.com` — free Developer Edition orgs from
+//!   the developer.salesforce.com signup flow (subdomain ends in `-dev-ed`)
 //!
 //! Anything else (including legacy pre-Enhanced-Domains URLs and
 //! production My Domains) requires `CLOUDBURST_INTEGRATION_FORCE=1`
@@ -64,10 +66,15 @@ pub(crate) const ENV_FORCE: &str = "CLOUDBURST_INTEGRATION_FORCE";
 
 /// Known-safe partition infixes for sandbox/dev/scratch orgs (with
 /// Enhanced Domains, the current standard since Spring '23).
+///
+/// `.trailblaze.` is the partition for free Developer Edition orgs
+/// created via the developer.salesforce.com signup flow — their
+/// subdomain ends in `-dev-ed` and they're explicitly for testing.
 const SAFE_PARTITIONS: &[&str] = &[
     ".sandbox.my.salesforce.com",
     ".develop.my.salesforce.com",
     ".scratch.my.salesforce.com",
+    ".trailblaze.my.salesforce.com",
 ];
 
 /// Returns true if the URL matches a known-safe sandbox/dev/scratch
@@ -116,8 +123,9 @@ pub async fn try_init_client() -> Option<Cloudburst> {
             "REFUSING TO RUN: {ENV_INSTANCE_URL} ({instance_url}) doesn't match a known \
              sandbox/dev/scratch pattern. Expected one of: \
              *.sandbox.my.salesforce.com, *.develop.my.salesforce.com, \
-             *.scratch.my.salesforce.com. Set {ENV_FORCE}=1 to override \
-             — but verify the org is safe for destructive writes first.",
+             *.scratch.my.salesforce.com, *.trailblaze.my.salesforce.com. \
+             Set {ENV_FORCE}=1 to override — but verify the org is safe \
+             for destructive writes first.",
         );
         return None;
     }
@@ -187,6 +195,11 @@ mod tests {
         ));
         assert!(is_safe_test_url(
             "https://test-7emx29.scratch.my.salesforce.com"
+        ));
+        // Free Developer Edition orgs from developer.salesforce.com
+        // signup use the .trailblaze. partition with a -dev-ed subdomain.
+        assert!(is_safe_test_url(
+            "https://cunning-bear-jezk1j-dev-ed.trailblaze.my.salesforce.com"
         ));
     }
 

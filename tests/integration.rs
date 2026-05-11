@@ -42,3 +42,15 @@ mod common;
 
 #[path = "integration/smoke.rs"]
 mod smoke;
+
+#[path = "integration/sobjects.rs"]
+mod sobjects;
+
+#[path = "integration/query.rs"]
+mod query;
+
+#[path = "integration/composite.rs"]
+mod composite;
+
+#[path = "integration/tooling.rs"]
+mod tooling;

@@ -51,8 +51,8 @@
 
 #![allow(dead_code)] // helper functions used by sibling test modules
 
-use cloudburst_sdk::auth::{JwtAuth, SharedAuth, StaticTokenAuth};
 use cloudburst_sdk::Cloudburst;
+use cloudburst_sdk::auth::{JwtAuth, SharedAuth, StaticTokenAuth};
 use std::sync::{Arc, Once};
 
 pub(crate) const ENV_ENABLED: &str = "CLOUDBURST_INTEGRATION";

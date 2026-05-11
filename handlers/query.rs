@@ -45,6 +45,22 @@ impl Cloudburst {
     ///
     /// Calls `GET /services/data/{api_version}/query?q={soql}`. The query
     /// string is URL-encoded automatically — pass plain SOQL.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use std::sync::Arc;
+    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
+    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// let result = sf.query("SELECT Id, Name FROM Account LIMIT 10").await?;
+    /// for record in &result.records {
+    ///     println!("{}", record["Name"]);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn query(&self, soql: &str) -> CloudburstResult<QueryResult<Value>> {
         self.query_as(soql).await
     }
@@ -107,6 +123,25 @@ impl Cloudburst {
     /// fetched on demand as the consumer drains the buffer.
     ///
     /// See [`pagination`](crate::pagination) for the full contract.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use std::sync::Arc;
+    /// use futures::StreamExt;
+    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
+    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// let mut stream = sf.query_stream("SELECT Id FROM Account");
+    /// while let Some(item) = stream.next().await {
+    ///     let record = item?;
+    ///     // process record
+    ///     # let _ = record;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn query_stream(&self, soql: &str) -> Records<Value> {
         self.query_stream_as(soql)
     }

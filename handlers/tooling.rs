@@ -85,6 +85,20 @@ use serde_json::Value;
 impl Cloudburst {
     /// Returns a handler for Tooling API resources rooted at
     /// `/services/data/{api_version}/tooling/`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use std::sync::Arc;
+    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
+    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// let result = sf.tooling().execute_anonymous("System.debug('hello');").await?;
+    /// assert!(result.compiled && result.success);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn tooling(&self) -> ToolingHandler<'_> {
         ToolingHandler { client: self }
     }

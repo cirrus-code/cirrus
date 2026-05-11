@@ -95,6 +95,32 @@ impl std::fmt::Debug for JwtAuth {
 
 impl JwtAuth {
     /// Begins constructing a [`JwtAuth`].
+    ///
+    /// JWT bearer flow (RFC 7523): the SDK signs a JWT assertion with
+    /// your connected app's private key and exchanges it for an access
+    /// token at the configured login URL. Cached access tokens are
+    /// refreshed transparently on 401.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use cloudburst_sdk::auth::JwtAuth;
+    /// use cloudburst_sdk::Cloudburst;
+    /// use std::sync::Arc;
+    ///
+    /// # fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// let auth = JwtAuth::builder()
+    ///     .consumer_key("3MVG9...")
+    ///     .username("integration-user@example.com")
+    ///     .login_url("https://login.salesforce.com")
+    ///     .instance_url("https://my-org.my.salesforce.com")
+    ///     .private_key_pem_file("./private.pem")?
+    ///     .build()?;
+    /// let sf = Cloudburst::builder().auth(Arc::new(auth)).build()?;
+    /// # let _ = sf;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn builder() -> JwtAuthBuilder {
         JwtAuthBuilder::default()
     }

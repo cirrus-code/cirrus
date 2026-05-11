@@ -27,7 +27,10 @@ async fn execute_anonymous_clean_run_marks_success_true() {
         .await
         .expect("executeAnonymous should round-trip");
     assert!(result.compiled, "valid Apex should compile: {result:?}");
-    assert!(result.success, "no exception should produce success=true: {result:?}");
+    assert!(
+        result.success,
+        "no exception should produce success=true: {result:?}"
+    );
     assert!(
         result.compile_problem.is_none(),
         "clean compile should have no compileProblem, got {:?}",
@@ -39,7 +42,10 @@ async fn execute_anonymous_clean_run_marks_success_true() {
     );
     // Sentinel-pair: -1 for both line and column when no error.
     assert_eq!(result.line, -1, "no-error sentinel for line should be -1");
-    assert_eq!(result.column, -1, "no-error sentinel for column should be -1");
+    assert_eq!(
+        result.column, -1,
+        "no-error sentinel for column should be -1"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

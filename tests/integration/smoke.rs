@@ -51,10 +51,7 @@ async fn versions_are_sortable_via_version_number() {
         return;
     };
     let versions = sf.versions().await.unwrap();
-    let parsed: Vec<_> = versions
-        .iter()
-        .filter_map(|v| v.version_number())
-        .collect();
+    let parsed: Vec<_> = versions.iter().filter_map(|v| v.version_number()).collect();
     assert_eq!(
         parsed.len(),
         versions.len(),
@@ -92,8 +89,8 @@ async fn latest_api_version_returns_v_prefixed_string() {
 #[tokio::test]
 #[ignore]
 async fn build_with_latest_version_uses_negotiated_value() {
-    use cloudburst_sdk::auth::StaticTokenAuth;
     use cloudburst_sdk::Cloudburst;
+    use cloudburst_sdk::auth::StaticTokenAuth;
     use std::sync::Arc;
 
     let Some(bootstrap) = try_init_client().await else {

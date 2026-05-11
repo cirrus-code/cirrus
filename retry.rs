@@ -32,6 +32,29 @@ use std::time::Duration;
 /// Construct via [`RetryPolicy::default`] for sensible defaults, or
 /// [`RetryPolicy::none`] to disable retries entirely. All fields are
 /// public for ad-hoc tweaking.
+///
+/// # Example
+///
+/// ```no_run
+/// use cloudburst_sdk::{Cloudburst, RetryPolicy, auth::StaticTokenAuth};
+/// use std::sync::Arc;
+/// use std::time::Duration;
+///
+/// # fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+/// let policy = RetryPolicy {
+///     max_retries: 5,
+///     base_delay: Duration::from_millis(250),
+///     ..RetryPolicy::default()
+/// };
+/// let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
+/// let sf = Cloudburst::builder()
+///     .auth(auth)
+///     .retry_policy(policy)
+///     .build()?;
+/// # let _ = sf;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
     /// Maximum number of *additional* attempts after the initial

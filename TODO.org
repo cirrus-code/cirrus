@@ -326,21 +326,30 @@ either typed JSON or =serde_json::Value=.
 ** TODO Wiremock test pass — happy/error paths per builder
 - Build-as-you-go: every new handler ships with wiremock coverage.
 - Distinct from live integration tests under [[*Pre-release gates][Pre-release gates]] — these stay fast and run on every CI build.
-** TODO Doc-test pass — every public builder gets one runnable example
+** DONE Doc-test pass — every public builder gets one runnable example
+- 17 doctests covering the major entry points: =Cloudburst::builder=, =Cloudburst::{sobject, query, query_stream, bulk, tooling, composite, apex, event_monitoring}=, all four auth-flow builders (=JwtAuth::builder=, =RefreshTokenAuth::builder=, =ClientCredentialsAuth::builder=, =StaticTokenAuth::new=), =RetryPolicy=, plus crate-level quickstart in =lib.rs= and the existing =build_with_latest_version= example.
+- All use the =no_run= attribute (compile-check without executing) so doctests catch API regressions on every =cargo test= without hitting Salesforce.
+- Hidden setup (=# use ...= / =# async fn example() -> Result<...>=) keeps the rendered docs focused on the *interesting* lines while still type-checking the full snippet.
+- Required side fix: re-exported =bytes::Bytes= at the crate root so the =bulk()= doctest can write =cloudburst_sdk::Bytes= rather than forcing callers to add =bytes= as a separate dependency. This was always implicit in the public API surface (=BulkIngestHandler::upload= takes =bytes::Bytes=).
 
 * Pre-release gates [0/2]
 :PROPERTIES:
 :GOAL: Must ship before the first crates.io release. Not blocking day-to-day handler work, but the SDK should not go public without these layers in place.
 :END:
 
-** TODO Property tests for URL / encoding / parser invariants [#B]
-- *What:* Add =proptest= as a dev-dependency and write property tests for the cheap-but-load-bearing helpers:
-  - =Cloudburst::versioned_segments= — for any segment string, the resulting URL parses back to the same segments and never contains =//= outside the scheme.
-  - =Cloudburst::versioned_url= / =Cloudburst::instance_url= — round-trip stability with arbitrary leading/trailing slashes on the path.
-  - =response::parse_response_bytes= — for any =(status, bytes)= input, the function returns =Result= and never panics. Pairs naturally with =unwrap_used = "deny"= already in =Cargo.toml=.
-  - SOQL escaping (when we add a builder) — escaped strings parse back to the original.
-- *Why:* The trailing-slash bug we hit during sObject CRUD would have been caught by a one-line property invariant. Property tests are the cheapest way to lock invariants on this layer.
-- *Effort:* Small. ~1 day to add =proptest=, write ~5 properties, integrate with =cargo nextest=.
+** DONE Property tests for URL / encoding / parser invariants [#B]
+- =proptest= added as dev-dependency; 8 property tests + 1 targeted regression test split between =lib.rs::property_tests= (URL helpers) and =response.rs::property_tests= (parser invariants).
+- *URL helpers* (=lib.rs=):
+  - =resolve_url_never_emits_double_slash= — for any path, =resolve_url= produces a URL that parses and contains no =//= outside the scheme separator.
+  - =resolve_url_passes_through_absolute_urls= — =http(s)://...= URLs round-trip unchanged.
+  - =resolve_url_instance_rooted_skips_version= — leading-=/= paths bypass the version prefix.
+  - =versioned_segments_round_trip= — segments are recoverable from the parsed URL.
+  - =versioned_segments_never_emits_double_slash= — variadic-length segment lists never introduce =//=.
+  - =versioned_segments_percent_encodes_reserved_slash= (targeted) — upsert-by-external-ID with =/= in the value percent-encodes correctly.
+- *Parser invariants* (=response.rs=):
+  - =parse_response_bytes_never_panics_for_value= — arbitrary =(status, bytes)= produces a =Result=, never panics. Pairs with crate-wide =unwrap_used = "deny"=.
+  - =non_2xx_status_always_returns_err= — any status outside 2xx yields =Err= regardless of body content.
+- *Real bug fixed via proptest:* =resolve_url("//")= previously produced =https://my.salesforce.com//= (double slash). Shrinker reduced the failing case to two characters. Fixed by switching =strip_prefix('/')= → =trim_start_matches('/')=, making =/foo= and =//foo= synonyms ("instance-rooted absolute path"). Caller-error inputs (paths containing =//= mid-segment) are out of contract; tightened the strategy with =prop_filter= accordingly.
 
 ** IN-PROGRESS Live integration tests against a Salesforce dev/scratch org [#A]
 - *Harness shipped:* =tests/integration.rs= entry binary + =tests/integration/{common,smoke,sobjects,query,composite,tooling}.rs=. All =#[ignore]=-gated so default =cargo test= doesn't touch the network.
@@ -367,6 +376,20 @@ either typed JSON or =serde_json::Value=.
 - *Effort:* Medium. Half-day for the harness + guards, ~1 day to flesh out the starter suite. CI integration optional (can stay developer-run until 1.0).
 - *Dependency:* Needs a Salesforce dev/scratch org. SFDX can spin scratch orgs on demand if we want truly disposable per-run orgs, but a long-lived dev org is fine for v1.
 
+* Documentation / discoverability [1/1]
+** DONE README + =examples/= directory
+- Full README at repo root: status, quick-start, REST surface table, auth flow list, design-principle (escape hatch) summary, cross-cutting features, links to examples, testing notes, license.
+- =examples/= directory with 5 runnable demos via =cargo run --example NAME=:
+  - =simple_query= — static-token auth + a SOQL =LIMIT 5= query.
+  - =crud_cycle= — create → typed retrieve → update → delete on =Account=.
+  - =bulk_ingest= — Bulk 2.0 lifecycle (create job, upload CSV, close, poll until terminal).
+  - =streaming_pagination= — =query_stream()= with =futures::StreamExt= iteration, bounded to 50 records for demo safety.
+  - =apex_passthrough= — typed request/response struct against =/services/apexrest/Hello=.
+- Each example reads =SF_INSTANCE_URL= and =SF_ACCESS_TOKEN= from env, fails cleanly with a clear error if unset. Verified the =simple_query= example end-to-end against the live Dev Edition org.
+- =Cargo.toml=: added =repository= field (required by =cargo-release=' s pre-flight check). Now publication-complete for crates.io: =description=, =keywords=, =categories=, =readme=, =repository=, =license= all set.
+
 * Housekeeping
-** TODO Cleanup commit: =cargo fmt= drift in older files (=auth/jwt.rs:201=, etc.)
-** TODO First =cargo-release= dry-run once ~3 builders shipped
+** DONE Cleanup commit: =cargo fmt= drift
+- =cargo fmt= run across the tree; verified clean with =cargo fmt --check=. 8 files normalized, mostly in =tests/integration/=.
+** DONE First =cargo-release= dry-run
+- =cargo release patch= dry-run validated end-to-end: branch guard (=allow-branch = ["main"]=) enforced; clean-tree guard enforced; package builds from a fresh =cargo package= extraction; would upload =cloudburst-sdk 0.1.1= to crates.io and push =v0.1.1= tag to origin. Real release blocked only by being on =dev= branch with uncommitted work — both correct guardrails. Surfaced and fixed one Cargo.toml gap (missing =repository=).

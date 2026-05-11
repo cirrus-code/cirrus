@@ -28,6 +28,30 @@ impl StaticTokenAuth {
     ///
     /// `instance_url` is normalized by trimming a trailing slash so that
     /// path concatenation in the client always produces clean URLs.
+    ///
+    /// Static-token auth doesn't refresh — when the token expires, calls
+    /// will surface 401. Use for short-lived scripts, CLI tools, or
+    /// tests where you've pasted a token from `sf org display`. For
+    /// long-running services prefer [`JwtAuth`](crate::auth::JwtAuth) or
+    /// [`RefreshTokenAuth`](crate::auth::RefreshTokenAuth).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use cloudburst_sdk::auth::StaticTokenAuth;
+    /// use cloudburst_sdk::Cloudburst;
+    /// use std::sync::Arc;
+    ///
+    /// # fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// let auth = Arc::new(StaticTokenAuth::new(
+    ///     "00D...!AQ...",
+    ///     "https://my-org.my.salesforce.com",
+    /// ));
+    /// let sf = Cloudburst::builder().auth(auth).build()?;
+    /// # let _ = sf;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn new(access_token: impl Into<String>, instance_url: impl Into<String>) -> Self {
         let mut instance_url: String = instance_url.into();
         if instance_url.ends_with('/') {

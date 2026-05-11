@@ -77,6 +77,28 @@ const CSV_ACCEPT: &str = "text/csv";
 impl Cloudburst {
     /// Returns a handler for Event Monitoring (`EventLogFile`) log-file
     /// downloads.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use std::sync::Arc;
+    /// use cloudburst_sdk::EventLogFileRecord;
+    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
+    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// // Discover via SOQL, download via the handler.
+    /// let result = sf.query_as::<EventLogFileRecord>(
+    ///     "SELECT Id, EventType, LogFile, LogDate, LogFileLength \
+    ///      FROM EventLogFile WHERE EventType = 'API' ORDER BY LogDate DESC LIMIT 1"
+    /// ).await?;
+    /// if let Some(record) = result.records.first() {
+    ///     let csv_bytes = sf.event_monitoring().download(&record.id).await?;
+    ///     println!("downloaded {} bytes", csv_bytes.len());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn event_monitoring(&self) -> EventMonitoringHandler<'_> {
         EventMonitoringHandler { client: self }
     }

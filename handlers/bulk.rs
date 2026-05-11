@@ -41,6 +41,32 @@ const SFORCE_NUM_RECORDS: &str = "Sforce-NumberOfRecords";
 
 impl Cloudburst {
     /// Returns a handler for Bulk API 2.0 (`/services/data/{api_version}/jobs/...`).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use std::sync::Arc;
+    /// use cloudburst_sdk::{BulkIngestSpec, BulkOperation};
+    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
+    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// let bulk = sf.bulk();
+    /// let ingest = bulk.ingest();
+    /// let spec = BulkIngestSpec {
+    ///     object: "Account".into(),
+    ///     operation: BulkOperation::Insert,
+    ///     external_id_field_name: None,
+    ///     line_ending: None,
+    ///     column_delimiter: None,
+    ///     assignment_rule_id: None,
+    /// };
+    /// let job = ingest.create(&spec).await?;
+    /// ingest.upload(&job.id, cloudburst_sdk::Bytes::from("Name\nAcme\n")).await?;
+    /// ingest.close(&job.id).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn bulk(&self) -> BulkHandler<'_> {
         BulkHandler { client: self }
     }

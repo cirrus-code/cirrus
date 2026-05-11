@@ -46,6 +46,26 @@ use serde::de::DeserializeOwned;
 impl Cloudburst {
     /// Returns a handler for Apex REST endpoints exposed under
     /// `/services/apexrest/`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use std::sync::Arc;
+    /// use serde::{Deserialize, Serialize};
+    /// #[derive(Serialize)]
+    /// struct Request { name: String }
+    /// #[derive(Deserialize)]
+    /// struct Response { greeting: String }
+    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
+    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// let req = Request { name: "world".into() };
+    /// let resp: Response = sf.apex().post("Hello", &req).await?;
+    /// println!("{}", resp.greeting);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn apex(&self) -> ApexHandler<'_> {
         ApexHandler { client: self }
     }

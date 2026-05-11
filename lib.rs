@@ -51,6 +51,7 @@ mod response;
 pub mod retry;
 
 pub use auth::{AuthSession, SharedAuth};
+pub use bytes::Bytes;
 pub use error::{CloudburstError, CloudburstResult, SalesforceError};
 pub use handlers::bulk::{BulkIngestSpec, BulkQuerySpec};
 pub use handlers::composite::{
@@ -114,6 +115,23 @@ impl std::fmt::Debug for Cloudburst {
 
 impl Cloudburst {
     /// Creates a new builder for constructing a [`Cloudburst`] client.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// use std::sync::Arc;
+    ///
+    /// # fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// let auth = Arc::new(StaticTokenAuth::new(
+    ///     "00D...!AQ...",
+    ///     "https://my-org.my.salesforce.com",
+    /// ));
+    /// let sf = Cloudburst::builder().auth(auth).build()?;
+    /// # let _ = sf;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn builder() -> CloudburstBuilder {
         CloudburstBuilder::default()
     }
@@ -193,7 +211,12 @@ impl Cloudburst {
     pub(crate) fn resolve_url(&self, path: &str) -> String {
         if path.starts_with("http://") || path.starts_with("https://") {
             path.to_string()
-        } else if let Some(rest) = path.strip_prefix('/') {
+        } else if path.starts_with('/') {
+            // trim_start_matches collapses runs of leading slashes —
+            // `/foo` and `//foo` both mean "instance-rooted absolute
+            // path." Property-tested in property_tests::
+            // resolve_url_never_emits_double_slash.
+            let rest = path.trim_start_matches('/');
             format!("{}/{}", self.auth.instance_url(), rest)
         } else {
             format!(
@@ -1679,5 +1702,156 @@ mod tests {
             let inv = auth.invalidations.lock().unwrap();
             assert!(inv.is_empty());
         }
+    }
+}
+
+/// Property tests for load-bearing URL/path helpers. These guard the
+/// trailing-slash, double-slash, and percent-encoding invariants that
+/// would otherwise be infinitely re-rediscoverable through targeted
+/// unit tests. The trailing-slash bug we hit during sObject CRUD
+/// (`.../v60.0//sobjects/...`) would have been caught by the no-double-
+/// slash property below.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod property_tests {
+    use super::*;
+    use crate::auth::StaticTokenAuth;
+    use proptest::prelude::*;
+    use std::sync::Arc;
+
+    fn fixture(instance: &str) -> Cloudburst {
+        let auth = Arc::new(StaticTokenAuth::new("tok", instance));
+        Cloudburst::builder().auth(auth).build().unwrap()
+    }
+
+    /// Path-shaped strings: ASCII alphanumerics plus characters that
+    /// have historically tripped percent-encoding, *but with no run
+    /// of `//`* — that's a caller-malformed input, not within the
+    /// well-formed contract `resolve_url` operates on.
+    fn path_segment() -> impl Strategy<Value = String> {
+        "[A-Za-z0-9_./%=&+-]{1,32}".prop_filter("no double-slash runs in well-formed paths", |s| {
+            !s.contains("//")
+        })
+    }
+
+    /// Unreserved-only segment for `versioned_segments` round-trip
+    /// properties — keeps the raw segment comparison free of percent-
+    /// encoding noise. A separate non-property test pins the encoding
+    /// behavior for reserved chars.
+    fn nonempty_segment() -> impl Strategy<Value = String> {
+        "[A-Za-z0-9_-]{1,32}"
+    }
+
+    proptest! {
+        /// For any non-fully-qualified path, `resolve_url` produces a
+        /// URL that parses cleanly and never contains a `//` outside
+        /// the scheme separator. This is the trailing-slash regression
+        /// invariant.
+        #[test]
+        fn resolve_url_never_emits_double_slash(path in path_segment()) {
+            let sf = fixture("https://my.salesforce.com");
+            let url = sf.resolve_url(&path);
+            // Strip the scheme separator first, then check for '//'.
+            let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(&url);
+            prop_assert!(
+                !after_scheme.contains("//"),
+                "resolve_url({path:?}) produced double slash: {url}",
+            );
+            prop_assert!(url::Url::parse(&url).is_ok(), "url should parse: {url}");
+        }
+
+        /// Fully-qualified URLs pass through `resolve_url` unchanged.
+        /// This is the locator-passthrough contract (`nextRecordsUrl`,
+        /// Bulk 2.0 result locators).
+        #[test]
+        fn resolve_url_passes_through_absolute_urls(host in "[a-z0-9-]{1,20}", path in path_segment()) {
+            let sf = fixture("https://my.salesforce.com");
+            let absolute = format!("https://{host}.example.com/{path}");
+            prop_assert_eq!(sf.resolve_url(&absolute), absolute);
+        }
+
+        /// Leading-slash paths resolve against the instance URL, not
+        /// the versioned data path. Verifies the three-mode dispatch
+        /// doesn't accidentally version-prefix an instance-rooted path.
+        /// `rest` is the part *after* the leading slash, so it must not
+        /// itself start with `/` (we strip runs of leading slashes —
+        /// see `resolve_url_never_emits_double_slash`).
+        #[test]
+        fn resolve_url_instance_rooted_skips_version(
+            rest in path_segment().prop_filter("rest follows the leading slash", |s| !s.starts_with('/')),
+        ) {
+            let sf = fixture("https://my.salesforce.com");
+            let url = sf.resolve_url(&format!("/{rest}"));
+            prop_assert_eq!(url, format!("https://my.salesforce.com/{rest}"));
+        }
+
+        /// `versioned_segments` produces a URL where each segment is
+        /// recoverable via the parsed `Url::path_segments`. This is the
+        /// percent-encoding round-trip property used by upsert-by-
+        /// external-ID with reserved characters in the value.
+        #[test]
+        fn versioned_segments_round_trip(
+            seg1 in nonempty_segment(),
+            seg2 in nonempty_segment(),
+        ) {
+            let sf = fixture("https://my.salesforce.com");
+            let url_str = sf.versioned_segments(&[&seg1, &seg2]).unwrap();
+            let parsed = url::Url::parse(&url_str).unwrap();
+            let segments: Vec<&str> = parsed
+                .path_segments()
+                .map(|s| s.collect())
+                .unwrap_or_default();
+            // Expected layout: ["services", "data", "{version}", seg1, seg2]
+            prop_assert_eq!(segments.len(), 5, "got segments {:?} from {}", segments, url_str);
+            prop_assert_eq!(segments[0], "services");
+            prop_assert_eq!(segments[1], "data");
+            // segments[2] is the api version; we don't assert on it
+            // because that's not what this property is about.
+            // Unreserved-only strategy means segments compare raw.
+            prop_assert_eq!(segments[3], seg1);
+            prop_assert_eq!(segments[4], seg2);
+        }
+
+        /// `versioned_segments` never emits double slashes between
+        /// segments. The pop_if_empty trick guards against that; this
+        /// property pins it.
+        #[test]
+        fn versioned_segments_never_emits_double_slash(
+            segs in proptest::collection::vec(nonempty_segment(), 1..6),
+        ) {
+            let sf = fixture("https://my.salesforce.com");
+            let refs: Vec<&str> = segs.iter().map(String::as_str).collect();
+            let url = sf.versioned_segments(&refs).unwrap();
+            let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(&url);
+            prop_assert!(
+                !after_scheme.contains("//"),
+                "got double slash in {url}",
+            );
+        }
+    }
+
+    /// Targeted regression: reserved characters in path segments must
+    /// be percent-encoded so the segment boundary survives. The upsert-
+    /// by-external-ID case with a `/` in the value depends on this.
+    #[test]
+    fn versioned_segments_percent_encodes_reserved_slash() {
+        let sf = fixture("https://my.salesforce.com");
+        // Pretend an external-ID value contains a slash.
+        let url = sf
+            .versioned_segments(&["sobjects", "Account", "Ext_Id__c", "abc/def"])
+            .unwrap();
+        // Must NOT split into an extra path segment.
+        let parsed = url::Url::parse(&url).unwrap();
+        let segs: Vec<&str> = parsed.path_segments().unwrap().collect();
+        assert_eq!(
+            segs.len(),
+            7,
+            "expected 7 segments (services, data, version, sobjects, Account, Ext_Id__c, abc%2Fdef), got {segs:?}",
+        );
+        assert!(
+            segs[6].contains("%2F") || segs[6].contains("%2f"),
+            "slash in external-ID value must be percent-encoded; got {:?}",
+            segs[6],
+        );
     }
 }

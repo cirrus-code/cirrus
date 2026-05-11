@@ -54,12 +54,12 @@ async fn composite_sobjects_create_then_delete() {
         assert!(r.success, "all three creates should succeed: {r:?}");
         assert!(r.errors.is_empty(), "successful creates have empty errors");
         let id = r.id.as_deref().expect("successful create has id");
-        assert!(id.starts_with("001"), "Account IDs start with 001, got {id}");
+        assert!(
+            id.starts_with("001"),
+            "Account IDs start with 001, got {id}"
+        );
     }
-    let ids: Vec<String> = results
-        .iter()
-        .filter_map(|r| r.id.clone())
-        .collect();
+    let ids: Vec<String> = results.iter().filter_map(|r| r.id.clone()).collect();
 
     // Now delete them via composite — exercises the delete variant too.
     let del_results = sf
@@ -96,7 +96,10 @@ async fn composite_batch_with_versions_and_limits() {
         .batch(&body)
         .await
         .expect("composite batch should succeed");
-    assert!(!response.has_errors, "GET-only subrequests should not error");
+    assert!(
+        !response.has_errors,
+        "GET-only subrequests should not error"
+    );
     assert_eq!(
         response.results.len(),
         2,
@@ -107,7 +110,11 @@ async fn composite_batch_with_versions_and_limits() {
     // type the inner result without modeling every endpoint, so verify
     // the shape via serde_json::Value.
     for sub in &response.results {
-        assert_eq!(sub.status_code, 200, "GET should return 200, got {}", sub.status_code);
+        assert_eq!(
+            sub.status_code, 200,
+            "GET should return 200, got {}",
+            sub.status_code
+        );
     }
 }
 

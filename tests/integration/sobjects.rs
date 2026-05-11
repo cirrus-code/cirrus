@@ -183,12 +183,17 @@ async fn account_retrieve_untyped_returns_value() {
     let mut cleanup = AccountCleanup::new(&sf, created.id.clone());
 
     let value = accounts.retrieve(&created.id).await.unwrap();
-    let obj = value.as_object().expect("Account retrieve returns a JSON object");
+    let obj = value
+        .as_object()
+        .expect("Account retrieve returns a JSON object");
     assert_eq!(
         obj.get("Id").and_then(|v| v.as_str()),
         Some(created.id.as_str()),
     );
-    assert_eq!(obj.get("Name").and_then(|v| v.as_str()), Some(name.as_str()));
+    assert_eq!(
+        obj.get("Name").and_then(|v| v.as_str()),
+        Some(name.as_str())
+    );
     // Salesforce always emits the `attributes` envelope on a single-record retrieve.
     assert!(
         obj.contains_key("attributes"),

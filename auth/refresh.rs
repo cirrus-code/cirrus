@@ -85,6 +85,31 @@ impl std::fmt::Debug for RefreshTokenAuth {
 
 impl RefreshTokenAuth {
     /// Begins constructing a [`RefreshTokenAuth`].
+    ///
+    /// Refresh-token grant (RFC 6749 §6): once an access token is
+    /// obtained through any flow that issues a refresh token (typically
+    /// Web Server with PKCE), use that refresh token to mint new access
+    /// tokens at will. The refresh token itself is long-lived.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use cloudburst_sdk::auth::RefreshTokenAuth;
+    /// use cloudburst_sdk::Cloudburst;
+    /// use std::sync::Arc;
+    ///
+    /// # fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// let auth = RefreshTokenAuth::builder()
+    ///     .consumer_key("3MVG9...")
+    ///     .refresh_token("5Aep861...")
+    ///     .login_url("https://login.salesforce.com")
+    ///     .instance_url("https://my-org.my.salesforce.com")
+    ///     .build()?;
+    /// let sf = Cloudburst::builder().auth(Arc::new(auth)).build()?;
+    /// # let _ = sf;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn builder() -> RefreshTokenAuthBuilder {
         RefreshTokenAuthBuilder::default()
     }

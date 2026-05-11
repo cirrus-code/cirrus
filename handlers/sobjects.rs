@@ -32,6 +32,24 @@ impl Cloudburst {
 
     /// Returns a handler scoped to a single sObject by API name (e.g.
     /// `"Account"`, `"My_Object__c"`).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use std::sync::Arc;
+    /// use serde_json::json;
+    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
+    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// let accounts = sf.sobject("Account");
+    /// let created = accounts.create(&json!({ "Name": "Acme" })).await?;
+    /// let record = accounts.retrieve(&created.id).await?;
+    /// accounts.delete(&created.id).await?;
+    /// # let _ = record;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn sobject<'a>(&'a self, name: &'a str) -> SObjectHandler<'a> {
         SObjectHandler { client: self, name }
     }
@@ -846,9 +864,7 @@ mod tests {
 
             let server = MockServer::start().await;
             Mock::given(method("GET"))
-                .and(path(
-                    "/services/data/v60.0/sobjects/Account/describe",
-                ))
+                .and(path("/services/data/v60.0/sobjects/Account/describe"))
                 .and(header_regex("if-modified-since", r"GMT$"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                     "name": "Account",
@@ -873,9 +889,7 @@ mod tests {
         async fn describe_per_object_if_modified_since_none_on_304() {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
-                .and(path(
-                    "/services/data/v60.0/sobjects/Account/describe",
-                ))
+                .and(path("/services/data/v60.0/sobjects/Account/describe"))
                 .respond_with(ResponseTemplate::new(304))
                 .mount(&server)
                 .await;

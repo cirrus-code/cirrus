@@ -1545,3 +1545,43 @@ mod tests {
         assert_eq!(info.remaining(), 0);
     }
 }
+
+/// Property tests for the response parser. The load-bearing invariant
+/// is that `parse_response_bytes` never panics on arbitrary inputs —
+/// pairs naturally with the crate-wide `unwrap_used = "deny"` lint.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use serde_json::Value;
+
+    proptest! {
+        /// For any (status, bytes) pair, parsing as `Value` returns a
+        /// `Result` — it never panics, no matter how malformed the
+        /// body or how unexpected the status code.
+        #[test]
+        fn parse_response_bytes_never_panics_for_value(
+            status in 100u16..600,
+            bytes in proptest::collection::vec(any::<u8>(), 0..256),
+        ) {
+            // Drive the parser. The result variant doesn't matter; the
+            // property is that *some* result is produced rather than a
+            // panic.
+            let _: Result<Value, _> = parse_response_bytes(status, &bytes);
+        }
+
+        /// Status codes outside 2xx always produce `Err(Api{..})` (or
+        /// `Err` of some sort) — never a successful deserialization,
+        /// regardless of body content. This is what callers rely on
+        /// to know "I got an error" from the Result discriminant alone.
+        #[test]
+        fn non_2xx_status_always_returns_err(
+            status in (100u16..200).prop_union(300u16..600),
+            bytes in proptest::collection::vec(any::<u8>(), 0..256),
+        ) {
+            let result: Result<Value, _> = parse_response_bytes(status, &bytes);
+            prop_assert!(result.is_err(), "status {status} must yield Err");
+        }
+    }
+}

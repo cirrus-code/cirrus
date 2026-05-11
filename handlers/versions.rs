@@ -203,9 +203,6 @@ mod tests {
         assert_eq!(sf.api_version(), "v66.0");
         // URL resolution now uses the discovered version.
         let url = sf.resolve_url("limits");
-        assert!(
-            url.contains("/v66.0/limits"),
-            "expected v66.0 in {url}"
-        );
+        assert!(url.contains("/v66.0/limits"), "expected v66.0 in {url}");
     }
 }

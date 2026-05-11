@@ -37,6 +37,31 @@ use serde_json::Value;
 
 impl Cloudburst {
     /// Returns a handler for the composite REST resources.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use std::sync::Arc;
+    /// use serde_json::json;
+    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
+    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// // Bulk-create three Accounts in one round trip.
+    /// let results = sf.composite().sobjects().create(&json!({
+    ///     "allOrNone": false,
+    ///     "records": [
+    ///         { "attributes": { "type": "Account" }, "Name": "Acme" },
+    ///         { "attributes": { "type": "Account" }, "Name": "Globex" },
+    ///         { "attributes": { "type": "Account" }, "Name": "Initech" },
+    ///     ]
+    /// })).await?;
+    /// for r in &results {
+    ///     println!("success={} id={:?}", r.success, r.id);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn composite(&self) -> CompositeHandler<'_> {
         CompositeHandler { client: self }
     }

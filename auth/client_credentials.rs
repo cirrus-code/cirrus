@@ -74,6 +74,31 @@ impl std::fmt::Debug for ClientCredentialsAuth {
 
 impl ClientCredentialsAuth {
     /// Begins constructing a [`ClientCredentialsAuth`].
+    ///
+    /// Client-credentials grant (RFC 6749 §4.4): server-to-server flow
+    /// where the connected app's consumer key + secret are exchanged
+    /// directly for an access token, no user context. The connected
+    /// app's "Run As" user determines record-level visibility.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use cloudburst_sdk::auth::ClientCredentialsAuth;
+    /// use cloudburst_sdk::Cloudburst;
+    /// use std::sync::Arc;
+    ///
+    /// # fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// let auth = ClientCredentialsAuth::builder()
+    ///     .consumer_key("3MVG9...")
+    ///     .consumer_secret("28A2...")
+    ///     .login_url("https://my-org.my.salesforce.com")
+    ///     .instance_url("https://my-org.my.salesforce.com")
+    ///     .build()?;
+    /// let sf = Cloudburst::builder().auth(Arc::new(auth)).build()?;
+    /// # let _ = sf;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn builder() -> ClientCredentialsAuthBuilder {
         ClientCredentialsAuthBuilder::default()
     }

@@ -9,7 +9,7 @@
 //! existing primitives stitched together:
 //!
 //! 1. **Discovery** — issue a SOQL query against `EventLogFile` via
-//!    [`Cloudburst::query`]/[`Cloudburst::query_as`]. Use
+//!    [`Cirrus::query`]/[`Cirrus::query_as`]. Use
 //!    [`EventLogFileRecord`] as the typed envelope.
 //! 2. **Download** — for each record, GET the CSV payload at the URL
 //!    in `LogFile`. This handler exposes
@@ -18,10 +18,10 @@
 //!    `LogFile` field's instance-relative URL — typically what you have
 //!    in hand from the query).
 //!
-//! Both download methods reuse the [`Cloudburst::fetch_raw`] transport
+//! Both download methods reuse the [`Cirrus::fetch_raw`] transport
 //! shared with Bulk 2.0 — the response comes back as `bytes::Bytes`,
 //! and non-2xx still surfaces as the standard
-//! [`crate::CloudburstError::Api`].
+//! [`crate::CirrusError::Api`].
 //!
 //! # Wire shape
 //!
@@ -64,29 +64,29 @@
 //! pipeline (Splunk, Snowflake, etc.) anyway. The `csv` crate or a
 //! tabular DataFrame library is the right next step on the caller side.
 //!
-//! [`Cloudburst::query`]: crate::Cloudburst::query
-//! [`Cloudburst::query_as`]: crate::Cloudburst::query_as
-//! [`Cloudburst::fetch_raw`]: crate::Cloudburst
+//! [`Cirrus::query`]: crate::Cirrus::query
+//! [`Cirrus::query_as`]: crate::Cirrus::query_as
+//! [`Cirrus::fetch_raw`]: crate::Cirrus
 //! [`EventLogFileRecord`]: crate::EventLogFileRecord
 
-use crate::Cloudburst;
-use crate::error::CloudburstResult;
+use crate::Cirrus;
+use crate::error::CirrusResult;
 
 const CSV_ACCEPT: &str = "text/csv";
 
-impl Cloudburst {
+impl Cirrus {
     /// Returns a handler for Event Monitoring (`EventLogFile`) log-file
     /// downloads.
     ///
     /// # Example
     ///
     /// ```no_run
-    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use cirrus::{Cirrus, auth::StaticTokenAuth};
     /// # use std::sync::Arc;
-    /// use cloudburst_sdk::EventLogFileRecord;
-    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// use cirrus::EventLogFileRecord;
+    /// # async fn example() -> Result<(), cirrus::CirrusError> {
     /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
-    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// # let sf = Cirrus::builder().auth(auth).build()?;
     /// // Discover via SOQL, download via the handler.
     /// let result = sf.query_as::<EventLogFileRecord>(
     ///     "SELECT Id, EventType, LogFile, LogDate, LogFileLength \
@@ -107,11 +107,11 @@ impl Cloudburst {
 /// Handler for Event Monitoring binary downloads.
 ///
 /// Discovery (querying the `EventLogFile` sObject) goes through the
-/// regular [`Cloudburst::query`] / [`Cloudburst::query_as`] methods —
+/// regular [`Cirrus::query`] / [`Cirrus::query_as`] methods —
 /// this handler only exposes the binary CSV fetch.
 #[derive(Debug)]
 pub struct EventMonitoringHandler<'a> {
-    client: &'a Cloudburst,
+    client: &'a Cirrus,
 }
 
 impl EventMonitoringHandler<'_> {
@@ -122,7 +122,7 @@ impl EventMonitoringHandler<'_> {
     /// with `Accept: text/csv`. Returns the raw bytes — decoding the
     /// CSV is left to the caller (column sets are EventType-dependent;
     /// see the module-level docs).
-    pub async fn download(&self, log_file_id: &str) -> CloudburstResult<bytes::Bytes> {
+    pub async fn download(&self, log_file_id: &str) -> CirrusResult<bytes::Bytes> {
         let path = format!("sobjects/EventLogFile/{log_file_id}/LogFile");
         let (_headers, bytes) = self
             .client
@@ -139,12 +139,12 @@ impl EventMonitoringHandler<'_> {
     /// so it carries the API version of the originating query — same
     /// pattern as `nextRecordsUrl` on [`crate::QueryResult`]. Pass it
     /// through verbatim; the leading `/` is normalized into an
-    /// instance-rooted resolution by [`Cloudburst::resolve_url`].
+    /// instance-rooted resolution by [`Cirrus::resolve_url`].
     /// Fully-qualified URLs (`https://...`) also work.
     ///
     /// [`EventLogFileRecord`]: crate::EventLogFileRecord
-    /// [`Cloudburst::resolve_url`]: crate::Cloudburst
-    pub async fn download_url(&self, log_file_url: &str) -> CloudburstResult<bytes::Bytes> {
+    /// [`Cirrus::resolve_url`]: crate::Cirrus
+    pub async fn download_url(&self, log_file_url: &str) -> CirrusResult<bytes::Bytes> {
         // Normalize bare paths the way query_more does, so callers can
         // pass the LogFile field straight through whether it has a
         // leading slash or not.
@@ -170,9 +170,9 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn fixture(uri: String) -> Cloudburst {
+    fn fixture(uri: String) -> Cirrus {
         let auth = Arc::new(StaticTokenAuth::new("tok", uri));
-        Cloudburst::builder().auth(auth).build().unwrap()
+        Cirrus::builder().auth(auth).build().unwrap()
     }
 
     #[tokio::test]
@@ -270,7 +270,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            crate::CloudburstError::Api { status, errors, .. } => {
+            crate::CirrusError::Api { status, errors, .. } => {
                 assert_eq!(status, 404);
                 assert_eq!(errors[0].error_code, "NOT_FOUND");
             }
@@ -283,7 +283,7 @@ mod tests {
         // Confirms the typed EventLogFileRecord envelope works against
         // the documented response shape from dome_event_log_file_query.
         // No new transport — just a typed query via the existing
-        // Cloudburst::query_as.
+        // Cirrus::query_as.
         use crate::EventLogFileRecord;
         use crate::QueryResult;
         use wiremock::matchers::query_param;

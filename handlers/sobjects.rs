@@ -2,28 +2,28 @@
 //!
 //! Two handler structs gate the surface:
 //!
-//! - [`SObjectsHandler`] (from [`Cloudburst::sobjects`]): collection-level
+//! - [`SObjectsHandler`] (from [`Cirrus::sobjects`]): collection-level
 //!   operations that don't target a specific object — currently
 //!   [`describe_global`].
-//! - [`SObjectHandler`] (from [`Cloudburst::sobject`]): per-object
+//! - [`SObjectHandler`] (from [`Cirrus::sobject`]): per-object
 //!   operations — describe metadata, retrieve, create, update, delete,
 //!   upsert. Generic over caller-supplied record types: every method that
 //!   produces a record returns `serde_json::Value` by default, with an
 //!   `_as::<T>()` variant for typed deserialization.
 //!
 //! [`describe_global`]: SObjectsHandler::describe_global
-//! [`Cloudburst::sobjects`]: crate::Cloudburst::sobjects
-//! [`Cloudburst::sobject`]: crate::Cloudburst::sobject
+//! [`Cirrus::sobjects`]: crate::Cirrus::sobjects
+//! [`Cirrus::sobject`]: crate::Cirrus::sobject
 
-use crate::Cloudburst;
-use crate::error::{CloudburstError, CloudburstResult};
+use crate::Cirrus;
+use crate::error::{CirrusError, CirrusResult};
 use crate::response::{DescribeGlobal, SObjectCreateResult};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::time::SystemTime;
 
-impl Cloudburst {
+impl Cirrus {
     /// Returns a handler for collection-level sObject operations
     /// (currently just describe global).
     pub fn sobjects(&self) -> SObjectsHandler<'_> {
@@ -36,12 +36,12 @@ impl Cloudburst {
     /// # Example
     ///
     /// ```no_run
-    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use cirrus::{Cirrus, auth::StaticTokenAuth};
     /// # use std::sync::Arc;
     /// use serde_json::json;
-    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # async fn example() -> Result<(), cirrus::CirrusError> {
     /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
-    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// # let sf = Cirrus::builder().auth(auth).build()?;
     /// let accounts = sf.sobject("Account");
     /// let created = accounts.create(&json!({ "Name": "Acme" })).await?;
     /// let record = accounts.retrieve(&created.id).await?;
@@ -55,17 +55,17 @@ impl Cloudburst {
     }
 }
 
-/// Collection-level sObject handler. Returned by [`Cloudburst::sobjects`].
+/// Collection-level sObject handler. Returned by [`Cirrus::sobjects`].
 #[derive(Debug)]
 pub struct SObjectsHandler<'a> {
-    client: &'a Cloudburst,
+    client: &'a Cirrus,
 }
 
 impl SObjectsHandler<'_> {
     /// Describes every object visible to the authenticated user.
     ///
     /// Calls `GET /services/data/{api_version}/sobjects/`.
-    pub async fn describe_global(&self) -> CloudburstResult<DescribeGlobal> {
+    pub async fn describe_global(&self) -> CirrusResult<DescribeGlobal> {
         self.client.get("sobjects").await
     }
 
@@ -86,7 +86,7 @@ impl SObjectsHandler<'_> {
     pub async fn describe_global_if_modified_since(
         &self,
         since: SystemTime,
-    ) -> CloudburstResult<Option<DescribeGlobal>> {
+    ) -> CirrusResult<Option<DescribeGlobal>> {
         let date = httpdate::fmt_http_date(since);
         let (status, bytes) = self
             .client
@@ -101,15 +101,15 @@ impl SObjectsHandler<'_> {
             return Ok(None);
         }
         Ok(Some(
-            serde_json::from_slice(&bytes).map_err(CloudburstError::Serialization)?,
+            serde_json::from_slice(&bytes).map_err(CirrusError::Serialization)?,
         ))
     }
 }
 
-/// Per-object handler. Returned by [`Cloudburst::sobject`].
+/// Per-object handler. Returned by [`Cirrus::sobject`].
 #[derive(Debug)]
 pub struct SObjectHandler<'a> {
-    client: &'a Cloudburst,
+    client: &'a Cirrus,
     name: &'a str,
 }
 
@@ -123,13 +123,13 @@ impl<'a> SObjectHandler<'a> {
     /// record-type info, etc.). Returns the raw JSON.
     ///
     /// Calls `GET /services/data/{api_version}/sobjects/{name}/describe`.
-    pub async fn describe(&self) -> CloudburstResult<Value> {
+    pub async fn describe(&self) -> CirrusResult<Value> {
         self.describe_as().await
     }
 
     /// Typed variant of [`describe`](Self::describe). Supply your own
     /// struct to model a subset of the (very large) describe response.
-    pub async fn describe_as<R: DeserializeOwned>(&self) -> CloudburstResult<R> {
+    pub async fn describe_as<R: DeserializeOwned>(&self) -> CirrusResult<R> {
         let url = self
             .client
             .versioned_segments(&["sobjects", self.name, "describe"])?;
@@ -149,7 +149,7 @@ impl<'a> SObjectHandler<'a> {
     pub async fn describe_if_modified_since(
         &self,
         since: SystemTime,
-    ) -> CloudburstResult<Option<Value>> {
+    ) -> CirrusResult<Option<Value>> {
         self.describe_if_modified_since_as(since).await
     }
 
@@ -158,7 +158,7 @@ impl<'a> SObjectHandler<'a> {
     pub async fn describe_if_modified_since_as<R: DeserializeOwned>(
         &self,
         since: SystemTime,
-    ) -> CloudburstResult<Option<R>> {
+    ) -> CirrusResult<Option<R>> {
         // versioned_segments produces a fully-resolved instance URL.
         // send_with_headers takes a path that goes through
         // resolve_url; pass the absolute URL through the leading-`/`
@@ -183,7 +183,7 @@ impl<'a> SObjectHandler<'a> {
             return Ok(None);
         }
         Ok(Some(
-            serde_json::from_slice(&bytes).map_err(CloudburstError::Serialization)?,
+            serde_json::from_slice(&bytes).map_err(CirrusError::Serialization)?,
         ))
     }
 
@@ -191,12 +191,12 @@ impl<'a> SObjectHandler<'a> {
     /// fields use [`retrieve_with_fields`](Self::retrieve_with_fields).
     ///
     /// Calls `GET /services/data/{api_version}/sobjects/{name}/{id}`.
-    pub async fn retrieve(&self, id: &str) -> CloudburstResult<Value> {
+    pub async fn retrieve(&self, id: &str) -> CirrusResult<Value> {
         self.retrieve_as(id).await
     }
 
     /// Typed variant of [`retrieve`](Self::retrieve).
-    pub async fn retrieve_as<R: DeserializeOwned>(&self, id: &str) -> CloudburstResult<R> {
+    pub async fn retrieve_as<R: DeserializeOwned>(&self, id: &str) -> CirrusResult<R> {
         let url = self
             .client
             .versioned_segments(&["sobjects", self.name, id])?;
@@ -208,7 +208,7 @@ impl<'a> SObjectHandler<'a> {
     /// Retrieves selected fields of a record by ID.
     ///
     /// Calls `GET /sobjects/{name}/{id}?fields=Field1,Field2,...`.
-    pub async fn retrieve_with_fields(&self, id: &str, fields: &[&str]) -> CloudburstResult<Value> {
+    pub async fn retrieve_with_fields(&self, id: &str, fields: &[&str]) -> CirrusResult<Value> {
         self.retrieve_with_fields_as(id, fields).await
     }
 
@@ -218,7 +218,7 @@ impl<'a> SObjectHandler<'a> {
         &self,
         id: &str,
         fields: &[&str],
-    ) -> CloudburstResult<R> {
+    ) -> CirrusResult<R> {
         let url = self
             .client
             .versioned_segments(&["sobjects", self.name, id])?;
@@ -234,7 +234,7 @@ impl<'a> SObjectHandler<'a> {
     /// Calls `POST /services/data/{api_version}/sobjects/{name}/`. The body
     /// is serialized as JSON — any `Serialize` value works (typed structs,
     /// `serde_json::json!({...})`, `HashMap<String, Value>`).
-    pub async fn create<B>(&self, body: &B) -> CloudburstResult<SObjectCreateResult>
+    pub async fn create<B>(&self, body: &B) -> CirrusResult<SObjectCreateResult>
     where
         B: Serialize + ?Sized,
     {
@@ -249,7 +249,7 @@ impl<'a> SObjectHandler<'a> {
     ///
     /// Calls `PATCH /services/data/{api_version}/sobjects/{name}/{id}`.
     /// Salesforce returns 204 No Content on success.
-    pub async fn update<B>(&self, id: &str, body: &B) -> CloudburstResult<()>
+    pub async fn update<B>(&self, id: &str, body: &B) -> CirrusResult<()>
     where
         B: Serialize + ?Sized,
     {
@@ -265,7 +265,7 @@ impl<'a> SObjectHandler<'a> {
     ///
     /// Calls `DELETE /services/data/{api_version}/sobjects/{name}/{id}`.
     /// Salesforce returns 204 No Content on success.
-    pub async fn delete(&self, id: &str) -> CloudburstResult<()> {
+    pub async fn delete(&self, id: &str) -> CirrusResult<()> {
         let url = self
             .client
             .versioned_segments(&["sobjects", self.name, id])?;
@@ -285,13 +285,13 @@ impl<'a> SObjectHandler<'a> {
     /// `=`, or other reserved characters are passed safely.
     ///
     /// If multiple records match the external ID, Salesforce returns 300
-    /// — surfaced as [`crate::CloudburstError::Api`].
+    /// — surfaced as [`crate::CirrusError::Api`].
     pub async fn upsert<B>(
         &self,
         external_field: &str,
         external_value: &str,
         body: &B,
-    ) -> CloudburstResult<SObjectCreateResult>
+    ) -> CirrusResult<SObjectCreateResult>
     where
         B: Serialize + ?Sized,
     {
@@ -336,7 +336,7 @@ impl<'a> SObjectHandler<'a> {
     /// # Example: ContentVersion upload
     ///
     /// ```ignore
-    /// use cloudburst_sdk::BlobUploadSpec;
+    /// use cirrus::BlobUploadSpec;
     /// use serde_json::json;
     ///
     /// let pdf: bytes::Bytes = std::fs::read("brochure.pdf").unwrap().into();
@@ -352,18 +352,18 @@ impl<'a> SObjectHandler<'a> {
     ///     blob: pdf,
     /// }).await?;
     /// println!("created ContentVersion {}", result.id);
-    /// # Ok::<(), cloudburst_sdk::CloudburstError>(())
+    /// # Ok::<(), cirrus::CirrusError>(())
     /// ```
     pub async fn create_with_blob<B>(
         &self,
         spec: BlobUploadSpec<'_, B>,
-    ) -> CloudburstResult<SObjectCreateResult>
+    ) -> CirrusResult<SObjectCreateResult>
     where
         B: Serialize + ?Sized,
     {
         let path = format!("sobjects/{}", self.name);
-        let json_bytes = serde_json::to_vec(spec.metadata)
-            .map_err(crate::error::CloudburstError::Serialization)?;
+        let json_bytes =
+            serde_json::to_vec(spec.metadata).map_err(crate::error::CirrusError::Serialization)?;
         let content_type = spec.content_type.unwrap_or("application/octet-stream");
         self.client
             .send_multipart(
@@ -403,13 +403,13 @@ impl<'a> SObjectHandler<'a> {
         &self,
         id: &str,
         spec: BlobUploadSpec<'_, B>,
-    ) -> CloudburstResult<()>
+    ) -> CirrusResult<()>
     where
         B: Serialize + ?Sized,
     {
         let path = format!("sobjects/{}/{}", self.name, id);
-        let json_bytes = serde_json::to_vec(spec.metadata)
-            .map_err(crate::error::CloudburstError::Serialization)?;
+        let json_bytes =
+            serde_json::to_vec(spec.metadata).map_err(crate::error::CirrusError::Serialization)?;
         let content_type = spec.content_type.unwrap_or("application/octet-stream");
         self.client
             .send_multipart(
@@ -484,16 +484,16 @@ pub struct BlobUploadSpec<'a, B: ?Sized> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use crate::Cloudburst;
+    use crate::Cirrus;
     use crate::auth::StaticTokenAuth;
     use serde_json::json;
     use std::sync::Arc;
     use wiremock::matchers::{body_json, header, method, path, path_regex, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn fixture(uri: String) -> Cloudburst {
+    fn fixture(uri: String) -> Cirrus {
         let auth = Arc::new(StaticTokenAuth::new("tok", uri));
-        Cloudburst::builder().auth(auth).build().unwrap()
+        Cirrus::builder().auth(auth).build().unwrap()
     }
 
     #[tokio::test]
@@ -769,7 +769,7 @@ mod tests {
         let sf = fixture(server.uri());
         let err = sf.sobject("Account").create(&json!({})).await.unwrap_err();
         match err {
-            crate::CloudburstError::Api { status, errors, .. } => {
+            crate::CirrusError::Api { status, errors, .. } => {
                 assert_eq!(status, 400);
                 assert_eq!(errors[0].error_code, "REQUIRED_FIELD_MISSING");
                 assert_eq!(errors[0].fields, vec!["Name".to_string()]);
@@ -924,10 +924,7 @@ mod tests {
                 .describe_global_if_modified_since(SystemTime::now())
                 .await
                 .unwrap_err();
-            assert!(matches!(
-                err,
-                crate::CloudburstError::Api { status: 403, .. }
-            ));
+            assert!(matches!(err, crate::CirrusError::Api { status: 403, .. }));
         }
     }
 
@@ -1041,7 +1038,7 @@ mod tests {
                 .await
                 .unwrap_err();
             match err {
-                crate::CloudburstError::Api { status, errors, .. } => {
+                crate::CirrusError::Api { status, errors, .. } => {
                     assert_eq!(status, 400);
                     assert_eq!(errors[0].error_code, "MALFORMED_ID");
                     assert_eq!(errors[0].fields, vec!["FolderId".to_string()]);

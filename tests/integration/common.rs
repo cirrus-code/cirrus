@@ -2,7 +2,7 @@
 //! guards.
 //!
 //! Every integration test calls [`try_init_client`] at the top. It
-//! returns `Some(Cloudburst)` when fully configured, `None` (with a
+//! returns `Some(Cirrus)` when fully configured, `None` (with a
 //! human-readable skip message) when env vars aren't set. Tests that
 //! get `None` should `return` immediately so they pass cleanly without
 //! hitting the network.
@@ -10,19 +10,19 @@
 //! # Required environment
 //!
 //! ```text
-//! CLOUDBURST_INTEGRATION=1
-//! CLOUDBURST_INTEGRATION_INSTANCE_URL=https://your-org.{sandbox,develop,scratch}.my.salesforce.com
+//! CIRRUS_INTEGRATION=1
+//! CIRRUS_INTEGRATION_INSTANCE_URL=https://your-org.{sandbox,develop,scratch}.my.salesforce.com
 //! ```
 //!
 //! Plus *one of*:
 //!
-//! - `CLOUDBURST_INTEGRATION_ACCESS_TOKEN=...` — static-token mode
+//! - `CIRRUS_INTEGRATION_ACCESS_TOKEN=...` — static-token mode
 //!   (paste from `sf org display`)
 //! - **JWT bearer mode** — all four required:
-//!   - `CLOUDBURST_INTEGRATION_USERNAME=...`
-//!   - `CLOUDBURST_INTEGRATION_CONSUMER_KEY=...`
-//!   - `CLOUDBURST_INTEGRATION_PRIVATE_KEY_PATH=...`
-//!   - `CLOUDBURST_INTEGRATION_LOGIN_URL=...` (typically
+//!   - `CIRRUS_INTEGRATION_USERNAME=...`
+//!   - `CIRRUS_INTEGRATION_CONSUMER_KEY=...`
+//!   - `CIRRUS_INTEGRATION_PRIVATE_KEY_PATH=...`
+//!   - `CIRRUS_INTEGRATION_LOGIN_URL=...` (typically
 //!     `https://login.salesforce.com` for production-tier login or
 //!     `https://test.salesforce.com` for sandboxes)
 //!
@@ -43,7 +43,7 @@
 //!   the developer.salesforce.com signup flow (subdomain ends in `-dev-ed`)
 //!
 //! Anything else (including legacy pre-Enhanced-Domains URLs and
-//! production My Domains) requires `CLOUDBURST_INTEGRATION_FORCE=1`
+//! production My Domains) requires `CIRRUS_INTEGRATION_FORCE=1`
 //! to override. Set this only when you've verified the target org is
 //! safe for destructive write operations.
 //!
@@ -51,18 +51,18 @@
 
 #![allow(dead_code)] // helper functions used by sibling test modules
 
-use cloudburst_sdk::Cloudburst;
-use cloudburst_sdk::auth::{JwtAuth, SharedAuth, StaticTokenAuth};
+use cirrus::Cirrus;
+use cirrus::auth::{JwtAuth, SharedAuth, StaticTokenAuth};
 use std::sync::{Arc, Once};
 
-pub(crate) const ENV_ENABLED: &str = "CLOUDBURST_INTEGRATION";
-pub(crate) const ENV_INSTANCE_URL: &str = "CLOUDBURST_INTEGRATION_INSTANCE_URL";
-pub(crate) const ENV_ACCESS_TOKEN: &str = "CLOUDBURST_INTEGRATION_ACCESS_TOKEN";
-pub(crate) const ENV_USERNAME: &str = "CLOUDBURST_INTEGRATION_USERNAME";
-pub(crate) const ENV_CONSUMER_KEY: &str = "CLOUDBURST_INTEGRATION_CONSUMER_KEY";
-pub(crate) const ENV_PRIVATE_KEY_PATH: &str = "CLOUDBURST_INTEGRATION_PRIVATE_KEY_PATH";
-pub(crate) const ENV_LOGIN_URL: &str = "CLOUDBURST_INTEGRATION_LOGIN_URL";
-pub(crate) const ENV_FORCE: &str = "CLOUDBURST_INTEGRATION_FORCE";
+pub(crate) const ENV_ENABLED: &str = "CIRRUS_INTEGRATION";
+pub(crate) const ENV_INSTANCE_URL: &str = "CIRRUS_INTEGRATION_INSTANCE_URL";
+pub(crate) const ENV_ACCESS_TOKEN: &str = "CIRRUS_INTEGRATION_ACCESS_TOKEN";
+pub(crate) const ENV_USERNAME: &str = "CIRRUS_INTEGRATION_USERNAME";
+pub(crate) const ENV_CONSUMER_KEY: &str = "CIRRUS_INTEGRATION_CONSUMER_KEY";
+pub(crate) const ENV_PRIVATE_KEY_PATH: &str = "CIRRUS_INTEGRATION_PRIVATE_KEY_PATH";
+pub(crate) const ENV_LOGIN_URL: &str = "CIRRUS_INTEGRATION_LOGIN_URL";
+pub(crate) const ENV_FORCE: &str = "CIRRUS_INTEGRATION_FORCE";
 
 /// Known-safe partition infixes for sandbox/dev/scratch orgs (with
 /// Enhanced Domains, the current standard since Spring '23).
@@ -93,7 +93,7 @@ fn load_dotenv() {
     });
 }
 
-/// Tries to construct a [`Cloudburst`] from environment configuration.
+/// Tries to construct a [`Cirrus`] from environment configuration.
 ///
 /// - Returns `Some(client)` if fully configured.
 /// - Returns `None` with a stderr skip message if env vars aren't set
@@ -102,13 +102,11 @@ fn load_dotenv() {
 ///
 /// **Don't** unwrap or panic on `None` — that would defeat the
 /// "tests pass cleanly when unconfigured" property.
-pub async fn try_init_client() -> Option<Cloudburst> {
+pub async fn try_init_client() -> Option<Cirrus> {
     load_dotenv();
 
     if std::env::var(ENV_ENABLED).ok().as_deref() != Some("1") {
-        eprintln!(
-            "skipping: set {ENV_ENABLED}=1 (and other CLOUDBURST_INTEGRATION_* vars) to enable",
-        );
+        eprintln!("skipping: set {ENV_ENABLED}=1 (and other CIRRUS_INTEGRATION_* vars) to enable",);
         return None;
     }
 
@@ -132,10 +130,10 @@ pub async fn try_init_client() -> Option<Cloudburst> {
 
     let auth = build_auth(&instance_url).await?;
 
-    let client = Cloudburst::builder()
+    let client = Cirrus::builder()
         .auth(auth)
         .build()
-        .expect("constructing Cloudburst from valid env should not fail");
+        .expect("constructing Cirrus from valid env should not fail");
     Some(client)
 }
 

@@ -14,9 +14,9 @@
 //! cargo run --example bulk_ingest
 //! ```
 
-use cloudburst_sdk::Cloudburst;
-use cloudburst_sdk::auth::StaticTokenAuth;
-use cloudburst_sdk::{BulkIngestSpec, BulkJobState, BulkOperation};
+use cirrus::Cirrus;
+use cirrus::auth::StaticTokenAuth;
+use cirrus::{BulkIngestSpec, BulkJobState, BulkOperation};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("SF_ACCESS_TOKEN")?,
         std::env::var("SF_INSTANCE_URL")?,
     ));
-    let sf = Cloudburst::builder().auth(auth).build()?;
+    let sf = Cirrus::builder().auth(auth).build()?;
     let bulk = sf.bulk();
     let ingest = bulk.ingest();
 
@@ -44,9 +44,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Salesforce requires the CSV to have a header row matching the
     // sObject field names.
     let csv = "Name,Description\n\
-               cloudburst-bulk-1,from bulk example\n\
-               cloudburst-bulk-2,from bulk example\n\
-               cloudburst-bulk-3,from bulk example\n";
+               cirrus-bulk-1,from bulk example\n\
+               cirrus-bulk-2,from bulk example\n\
+               cirrus-bulk-3,from bulk example\n";
     ingest.upload(&job.id, bytes::Bytes::from(csv)).await?;
     println!("uploaded {} bytes of CSV", csv.len());
 

@@ -56,13 +56,13 @@
 //!
 //! Failures use the *standard* Salesforce error array
 //! `[{message, errorCode}]` — same shape as regular REST, surfaced as
-//! [`crate::CloudburstError::Api`]. The Tooling API does **not** use the
+//! [`crate::CirrusError::Api`]. The Tooling API does **not** use the
 //! diverged composite-error shape ([`crate::CompositeError`]).
 //!
 //! # What this handler doesn't expose
 //!
 //! - `tooling/composite` — chained Tooling subrequests. Reach for the
-//!   regular [`Cloudburst::composite`] handler with
+//!   regular [`Cirrus::composite`] handler with
 //!   `tooling/sobjects/...` paths in subrequest URLs, or use the
 //!   open-ended client escape hatch.
 //! - Upsert by external ID. The Tooling API technically permits upsert on
@@ -73,8 +73,8 @@
 //!   and friends — accessible today via the open-ended client escape
 //!   hatch; a typed builder can be added when usage demands it.
 
-use crate::Cloudburst;
-use crate::error::CloudburstResult;
+use crate::Cirrus;
+use crate::error::CirrusResult;
 use crate::response::{
     DescribeGlobal, ExecuteAnonymousResult, QueryResult, SObjectCreateResult, SearchResult,
 };
@@ -82,18 +82,18 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-impl Cloudburst {
+impl Cirrus {
     /// Returns a handler for Tooling API resources rooted at
     /// `/services/data/{api_version}/tooling/`.
     ///
     /// # Example
     ///
     /// ```no_run
-    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use cirrus::{Cirrus, auth::StaticTokenAuth};
     /// # use std::sync::Arc;
-    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # async fn example() -> Result<(), cirrus::CirrusError> {
     /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
-    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// # let sf = Cirrus::builder().auth(auth).build()?;
     /// let result = sf.tooling().execute_anonymous("System.debug('hello');").await?;
     /// assert!(result.compiled && result.success);
     /// # Ok(())
@@ -104,10 +104,10 @@ impl Cloudburst {
     }
 }
 
-/// Handler for Tooling API resources. Returned by [`Cloudburst::tooling`].
+/// Handler for Tooling API resources. Returned by [`Cirrus::tooling`].
 #[derive(Debug)]
 pub struct ToolingHandler<'a> {
-    client: &'a Cloudburst,
+    client: &'a Cirrus,
 }
 
 impl<'a> ToolingHandler<'a> {
@@ -119,7 +119,7 @@ impl<'a> ToolingHandler<'a> {
     /// REST describe-global call, but enumerates Tooling sObjects
     /// (`ApexClass`, `CustomField`, `MetadataContainer`, …) instead of
     /// data sObjects (`Account`, `Contact`, …).
-    pub async fn describe_global(&self) -> CloudburstResult<DescribeGlobal> {
+    pub async fn describe_global(&self) -> CirrusResult<DescribeGlobal> {
         self.client.get("tooling/sobjects").await
     }
 
@@ -138,17 +138,14 @@ impl<'a> ToolingHandler<'a> {
     /// Calls `GET /services/data/{api_version}/tooling/query?q={soql}`.
     /// Tooling SOQL targets the metadata tier — regular sObjects
     /// (`Account`, `Contact`) are *not* visible here; reach for them via
-    /// [`Cloudburst::query`] instead.
-    pub async fn query(&self, soql: &str) -> CloudburstResult<QueryResult<Value>> {
+    /// [`Cirrus::query`] instead.
+    pub async fn query(&self, soql: &str) -> CirrusResult<QueryResult<Value>> {
         self.query_as(soql).await
     }
 
     /// Typed variant of [`query`](Self::query) — records deserialize as
     /// `R`.
-    pub async fn query_as<R: DeserializeOwned>(
-        &self,
-        soql: &str,
-    ) -> CloudburstResult<QueryResult<R>> {
+    pub async fn query_as<R: DeserializeOwned>(&self, soql: &str) -> CirrusResult<QueryResult<R>> {
         let query = [("q", soql)];
         self.client.get_with_query("tooling/query", &query).await
     }
@@ -188,7 +185,7 @@ impl<'a> ToolingHandler<'a> {
     /// are listed in the [SOSL Operation Limitations] doc page.
     ///
     /// [SOSL Operation Limitations]: https://developer.salesforce.com/docs/atlas.en-us.api_tooling.meta/api_tooling/reference_objects_sosl_limits.htm
-    pub async fn search(&self, sosl: &str) -> CloudburstResult<SearchResult<Value>> {
+    pub async fn search(&self, sosl: &str) -> CirrusResult<SearchResult<Value>> {
         self.search_as(sosl).await
     }
 
@@ -197,7 +194,7 @@ impl<'a> ToolingHandler<'a> {
     pub async fn search_as<R: DeserializeOwned>(
         &self,
         sosl: &str,
-    ) -> CloudburstResult<SearchResult<R>> {
+    ) -> CirrusResult<SearchResult<R>> {
         let query = [("q", sosl)];
         self.client.get_with_query("tooling/search", &query).await
     }
@@ -215,10 +212,10 @@ impl<'a> ToolingHandler<'a> {
     /// error, runtime error); see [`ExecuteAnonymousResult`] for the
     /// field-by-field guide. A non-2xx response (auth, permissions,
     /// malformed request) still surfaces as
-    /// [`crate::CloudburstError::Api`] — `ExecuteAnonymousResult` only
+    /// [`crate::CirrusError::Api`] — `ExecuteAnonymousResult` only
     /// describes outcomes for requests that Salesforce was *able* to
     /// dispatch to the Apex runtime.
-    pub async fn execute_anonymous(&self, apex: &str) -> CloudburstResult<ExecuteAnonymousResult> {
+    pub async fn execute_anonymous(&self, apex: &str) -> CirrusResult<ExecuteAnonymousResult> {
         let query = [("anonymousBody", apex)];
         self.client
             .get_with_query("tooling/executeAnonymous", &query)
@@ -233,7 +230,7 @@ impl<'a> ToolingHandler<'a> {
 /// but rooted under `tooling/sobjects/` instead of `sobjects/`.
 #[derive(Debug)]
 pub struct ToolingSObjectHandler<'a> {
-    client: &'a Cloudburst,
+    client: &'a Cirrus,
     name: &'a str,
 }
 
@@ -248,12 +245,12 @@ impl<'a> ToolingSObjectHandler<'a> {
     ///
     /// Calls
     /// `GET /services/data/{api_version}/tooling/sobjects/{name}/describe`.
-    pub async fn describe(&self) -> CloudburstResult<Value> {
+    pub async fn describe(&self) -> CirrusResult<Value> {
         self.describe_as().await
     }
 
     /// Typed variant of [`describe`](Self::describe).
-    pub async fn describe_as<R: DeserializeOwned>(&self) -> CloudburstResult<R> {
+    pub async fn describe_as<R: DeserializeOwned>(&self) -> CirrusResult<R> {
         let path = format!("tooling/sobjects/{}/describe", self.name);
         self.client.get(&path).await
     }
@@ -262,12 +259,12 @@ impl<'a> ToolingSObjectHandler<'a> {
     ///
     /// Calls
     /// `GET /services/data/{api_version}/tooling/sobjects/{name}/{id}`.
-    pub async fn retrieve(&self, id: &str) -> CloudburstResult<Value> {
+    pub async fn retrieve(&self, id: &str) -> CirrusResult<Value> {
         self.retrieve_as(id).await
     }
 
     /// Typed variant of [`retrieve`](Self::retrieve).
-    pub async fn retrieve_as<R: DeserializeOwned>(&self, id: &str) -> CloudburstResult<R> {
+    pub async fn retrieve_as<R: DeserializeOwned>(&self, id: &str) -> CirrusResult<R> {
         let path = format!("tooling/sobjects/{}/{}", self.name, id);
         self.client.get(&path).await
     }
@@ -276,7 +273,7 @@ impl<'a> ToolingSObjectHandler<'a> {
     ///
     /// Calls
     /// `GET /tooling/sobjects/{name}/{id}?fields=Field1,Field2,...`.
-    pub async fn retrieve_with_fields(&self, id: &str, fields: &[&str]) -> CloudburstResult<Value> {
+    pub async fn retrieve_with_fields(&self, id: &str, fields: &[&str]) -> CirrusResult<Value> {
         self.retrieve_with_fields_as(id, fields).await
     }
 
@@ -286,7 +283,7 @@ impl<'a> ToolingSObjectHandler<'a> {
         &self,
         id: &str,
         fields: &[&str],
-    ) -> CloudburstResult<R> {
+    ) -> CirrusResult<R> {
         let path = format!("tooling/sobjects/{}/{}", self.name, id);
         let joined = fields.join(",");
         let query = [("fields", joined.as_str())];
@@ -298,7 +295,7 @@ impl<'a> ToolingSObjectHandler<'a> {
     /// Calls
     /// `POST /services/data/{api_version}/tooling/sobjects/{name}/`.
     /// Returns the standard [`SObjectCreateResult`].
-    pub async fn create<B>(&self, body: &B) -> CloudburstResult<SObjectCreateResult>
+    pub async fn create<B>(&self, body: &B) -> CirrusResult<SObjectCreateResult>
     where
         B: Serialize + ?Sized,
     {
@@ -311,7 +308,7 @@ impl<'a> ToolingSObjectHandler<'a> {
     /// Calls
     /// `PATCH /services/data/{api_version}/tooling/sobjects/{name}/{id}`.
     /// Salesforce returns 204 No Content on success.
-    pub async fn update<B>(&self, id: &str, body: &B) -> CloudburstResult<()>
+    pub async fn update<B>(&self, id: &str, body: &B) -> CirrusResult<()>
     where
         B: Serialize + ?Sized,
     {
@@ -324,7 +321,7 @@ impl<'a> ToolingSObjectHandler<'a> {
     /// Calls
     /// `DELETE /services/data/{api_version}/tooling/sobjects/{name}/{id}`.
     /// Salesforce returns 204 No Content on success.
-    pub async fn delete(&self, id: &str) -> CloudburstResult<()> {
+    pub async fn delete(&self, id: &str) -> CirrusResult<()> {
         let path = format!("tooling/sobjects/{}/{}", self.name, id);
         self.client.delete(&path).await
     }
@@ -340,9 +337,9 @@ mod tests {
     use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn fixture(uri: String) -> Cloudburst {
+    fn fixture(uri: String) -> Cirrus {
         let auth = Arc::new(StaticTokenAuth::new("tok", uri));
-        Cloudburst::builder().auth(auth).build().unwrap()
+        Cirrus::builder().auth(auth).build().unwrap()
     }
 
     #[tokio::test]
@@ -766,7 +763,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            crate::CloudburstError::Api { status, errors, .. } => {
+            crate::CirrusError::Api { status, errors, .. } => {
                 assert_eq!(status, 400);
                 assert_eq!(errors[0].error_code, "MALFORMED_QUERY");
             }

@@ -23,7 +23,7 @@ async fn execute_anonymous_clean_run_marks_success_true() {
     // some org variants, so use an expression that always works.
     let result = sf
         .tooling()
-        .execute_anonymous("System.debug('cloudburst-sdk');")
+        .execute_anonymous("System.debug('cirrus');")
         .await
         .expect("executeAnonymous should round-trip");
     assert!(result.compiled, "valid Apex should compile: {result:?}");

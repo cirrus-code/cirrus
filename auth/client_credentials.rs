@@ -13,7 +13,7 @@
 //! org side; the SDK has nothing to configure for it. If the connected app
 //! is not set up with a run-as user, the token endpoint returns
 //! `invalid_client` or `invalid_grant`, which surface as
-//! [`CloudburstError::OAuth`].
+//! [`CirrusError::OAuth`].
 //!
 //! ## My Domain URL is mandatory
 //!
@@ -33,7 +33,7 @@
 
 use crate::auth::AuthSession;
 use crate::auth::token_endpoint::{check_instance_url, exchange};
-use crate::error::{CloudburstError, CloudburstResult};
+use crate::error::{CirrusError, CirrusResult};
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
@@ -83,18 +83,18 @@ impl ClientCredentialsAuth {
     /// # Example
     ///
     /// ```no_run
-    /// use cloudburst_sdk::auth::ClientCredentialsAuth;
-    /// use cloudburst_sdk::Cloudburst;
+    /// use cirrus::auth::ClientCredentialsAuth;
+    /// use cirrus::Cirrus;
     /// use std::sync::Arc;
     ///
-    /// # fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # fn example() -> Result<(), cirrus::CirrusError> {
     /// let auth = ClientCredentialsAuth::builder()
     ///     .consumer_key("3MVG9...")
     ///     .consumer_secret("28A2...")
     ///     .login_url("https://my-org.my.salesforce.com")
     ///     .instance_url("https://my-org.my.salesforce.com")
     ///     .build()?;
-    /// let sf = Cloudburst::builder().auth(Arc::new(auth)).build()?;
+    /// let sf = Cirrus::builder().auth(Arc::new(auth)).build()?;
     /// # let _ = sf;
     /// # Ok(())
     /// # }
@@ -103,9 +103,9 @@ impl ClientCredentialsAuth {
         ClientCredentialsAuthBuilder::default()
     }
 
-    async fn mint_token(&self) -> CloudburstResult<CachedToken> {
+    async fn mint_token(&self) -> CirrusResult<CachedToken> {
         tracing::info!(
-            target: "cloudburst::auth",
+            target: "cirrus::auth",
             flow = "client-credentials",
             login_url = %self.login_url,
             "minting fresh access token",
@@ -128,7 +128,7 @@ impl ClientCredentialsAuth {
 
 #[async_trait]
 impl AuthSession for ClientCredentialsAuth {
-    async fn access_token(&self) -> CloudburstResult<Cow<'_, str>> {
+    async fn access_token(&self) -> CirrusResult<Cow<'_, str>> {
         // Fast path — read lock, return clone of cached token if still valid.
         {
             let guard = self.cached.read().await;
@@ -165,14 +165,14 @@ impl AuthSession for ClientCredentialsAuth {
             && cached.access_token == stale_token
         {
             tracing::debug!(
-                target: "cloudburst::auth",
+                target: "cirrus::auth",
                 flow = "client-credentials",
                 "invalidating cached token (CAS matched)",
             );
             *guard = None;
         } else {
             tracing::trace!(
-                target: "cloudburst::auth",
+                target: "cirrus::auth",
                 flow = "client-credentials",
                 "invalidate called but cached token differs (concurrent refresh?); no-op",
             );
@@ -249,22 +249,22 @@ impl ClientCredentialsAuthBuilder {
     }
 
     /// Finalizes the builder.
-    pub fn build(self) -> CloudburstResult<ClientCredentialsAuth> {
+    pub fn build(self) -> CirrusResult<ClientCredentialsAuth> {
         let consumer_key = self
             .consumer_key
-            .ok_or(CloudburstError::MissingField("consumer_key"))?;
+            .ok_or(CirrusError::MissingField("consumer_key"))?;
         let consumer_secret = self
             .consumer_secret
-            .ok_or(CloudburstError::MissingField("consumer_secret"))?;
+            .ok_or(CirrusError::MissingField("consumer_secret"))?;
         let mut instance_url = self
             .instance_url
-            .ok_or(CloudburstError::MissingField("instance_url"))?;
+            .ok_or(CirrusError::MissingField("instance_url"))?;
         if instance_url.ends_with('/') {
             instance_url.pop();
         }
         let mut login_url = self
             .login_url
-            .ok_or(CloudburstError::MissingField("login_url"))?;
+            .ok_or(CirrusError::MissingField("login_url"))?;
         if login_url.ends_with('/') {
             login_url.pop();
         }
@@ -307,7 +307,7 @@ mod tests {
             .instance_url("https://x")
             .build()
             .unwrap_err();
-        assert!(matches!(err, CloudburstError::MissingField("consumer_key")));
+        assert!(matches!(err, CirrusError::MissingField("consumer_key")));
     }
 
     #[test]
@@ -317,10 +317,7 @@ mod tests {
             .instance_url("https://x")
             .build()
             .unwrap_err();
-        assert!(matches!(
-            err,
-            CloudburstError::MissingField("consumer_secret")
-        ));
+        assert!(matches!(err, CirrusError::MissingField("consumer_secret")));
     }
 
     #[test]
@@ -331,7 +328,7 @@ mod tests {
             .login_url("https://x")
             .build()
             .unwrap_err();
-        assert!(matches!(err, CloudburstError::MissingField("instance_url")));
+        assert!(matches!(err, CirrusError::MissingField("instance_url")));
     }
 
     #[test]
@@ -345,7 +342,7 @@ mod tests {
             .instance_url("https://x")
             .build()
             .unwrap_err();
-        assert!(matches!(err, CloudburstError::MissingField("login_url")));
+        assert!(matches!(err, CirrusError::MissingField("login_url")));
     }
 
     #[test]
@@ -441,7 +438,7 @@ mod tests {
 
         let err = auth.access_token().await.unwrap_err();
         match err {
-            CloudburstError::OAuth {
+            CirrusError::OAuth {
                 error,
                 error_description,
             } => {
@@ -470,7 +467,7 @@ mod tests {
             .unwrap();
 
         let err = auth.access_token().await.unwrap_err();
-        assert!(matches!(err, CloudburstError::Auth(_)));
+        assert!(matches!(err, CirrusError::Auth(_)));
     }
 
     /// Counts invocations and returns a fixed response. Same shape as the

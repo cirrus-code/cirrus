@@ -1,8 +1,8 @@
-//! # Cloudburst SDK
+//! # Cirrus SDK
 //!
 //! An ergonomic Rust HTTP client for the Salesforce REST API.
 //!
-//! Inspired by [Octocrab](https://github.com/XAMPPRocky/octocrab), Cloudburst
+//! Inspired by [Octocrab](https://github.com/XAMPPRocky/octocrab), Cirrus
 //! provides a type-safe, async interface for interacting with Salesforce
 //! while leaving response shapes entirely up to the caller — no hard-coded
 //! sObject types like `Account` or `Contact`.
@@ -24,16 +24,16 @@
 //! ## Quick start
 //!
 //! ```no_run
-//! use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+//! use cirrus::{Cirrus, auth::StaticTokenAuth};
 //! use std::sync::Arc;
 //!
-//! # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+//! # async fn example() -> Result<(), cirrus::CirrusError> {
 //! let auth = Arc::new(StaticTokenAuth::new(
 //!     "00D...!AQ...",
 //!     "https://my-org.my.salesforce.com",
 //! ));
 //!
-//! let sf = Cloudburst::builder()
+//! let sf = Cirrus::builder()
 //!     .auth(auth)
 //!     .build()?;
 //!
@@ -52,7 +52,7 @@ pub mod retry;
 
 pub use auth::{AuthSession, SharedAuth};
 pub use bytes::Bytes;
-pub use error::{CloudburstError, CloudburstResult, SalesforceError};
+pub use error::{CirrusError, CirrusResult, SalesforceError};
 pub use handlers::bulk::{BulkIngestSpec, BulkQuerySpec};
 pub use handlers::composite::{
     BatchRequest, BatchSubrequest, CompositeRequest, CompositeSubrequest,
@@ -79,7 +79,7 @@ pub const DEFAULT_API_VERSION: &str = "v60.0";
 
 /// Default User-Agent header value sent on every request.
 pub(crate) const DEFAULT_USER_AGENT: &str = concat!(
-    "cloudburst-sdk/",
+    "cirrus/",
     env!("CARGO_PKG_VERSION"),
     " (Rust SDK for Salesforce)"
 );
@@ -90,7 +90,7 @@ pub(crate) const DEFAULT_USER_AGENT: &str = concat!(
 /// the API version to use. Cheap to clone — internal state is reference
 /// counted.
 #[derive(Clone)]
-pub struct Cloudburst {
+pub struct Cirrus {
     client: reqwest::Client,
     auth: SharedAuth,
     api_version: String,
@@ -101,11 +101,11 @@ pub struct Cloudburst {
     last_limit_info: Arc<RwLock<Option<LimitInfo>>>,
 }
 
-impl std::fmt::Debug for Cloudburst {
+impl std::fmt::Debug for Cirrus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Deliberately omit `auth` — it may carry secrets — and the reqwest
         // client (no useful Debug). Show only the safe configuration knobs.
-        f.debug_struct("Cloudburst")
+        f.debug_struct("Cirrus")
             .field("api_version", &self.api_version)
             .field("instance_url", &self.auth.instance_url())
             .field("retry_policy", &self.retry_policy)
@@ -113,27 +113,27 @@ impl std::fmt::Debug for Cloudburst {
     }
 }
 
-impl Cloudburst {
-    /// Creates a new builder for constructing a [`Cloudburst`] client.
+impl Cirrus {
+    /// Creates a new builder for constructing a [`Cirrus`] client.
     ///
     /// # Example
     ///
     /// ```no_run
-    /// use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// use cirrus::{Cirrus, auth::StaticTokenAuth};
     /// use std::sync::Arc;
     ///
-    /// # fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # fn example() -> Result<(), cirrus::CirrusError> {
     /// let auth = Arc::new(StaticTokenAuth::new(
     ///     "00D...!AQ...",
     ///     "https://my-org.my.salesforce.com",
     /// ));
-    /// let sf = Cloudburst::builder().auth(auth).build()?;
+    /// let sf = Cirrus::builder().auth(auth).build()?;
     /// # let _ = sf;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn builder() -> CloudburstBuilder {
-        CloudburstBuilder::default()
+    pub fn builder() -> CirrusBuilder {
+        CirrusBuilder::default()
     }
 
     /// Returns the configured API version (e.g. `"v60.0"`).
@@ -185,7 +185,7 @@ impl Cloudburst {
             return;
         };
         tracing::debug!(
-            target: "cloudburst::limit_info",
+            target: "cirrus::limit_info",
             used = info.used,
             allowed = info.allowed,
             "captured Sforce-Limit-Info",
@@ -206,7 +206,7 @@ impl Cloudburst {
     ///   e.g. `limits` → `{instance}/services/data/{version}/limits`.
     ///
     /// This is the path-resolution contract used by every public verb method
-    /// on [`Cloudburst`] and is the load-bearing piece of the open-ended
+    /// on [`Cirrus`] and is the load-bearing piece of the open-ended
     /// client escape hatch.
     pub(crate) fn resolve_url(&self, path: &str) -> String {
         if path.starts_with("http://") || path.starts_with("https://") {
@@ -233,7 +233,7 @@ impl Cloudburst {
     /// Use this when any segment may contain reserved characters (slash,
     /// equals, percent, etc.) — e.g. an upsert external-ID value. Each
     /// element of `segments` is encoded as a single path segment.
-    pub(crate) fn versioned_segments(&self, segments: &[&str]) -> CloudburstResult<String> {
+    pub(crate) fn versioned_segments(&self, segments: &[&str]) -> CirrusResult<String> {
         let base = format!(
             "{}/services/data/{}/",
             self.auth.instance_url(),
@@ -243,9 +243,7 @@ impl Cloudburst {
         // The trailing '/' on `base` leaves an empty path segment; without
         // popping it, `extend` produces `.../v60.0//sobjects/...`.
         url.path_segments_mut()
-            .map_err(|()| {
-                CloudburstError::InvalidResponse("instance URL is not hierarchical".into())
-            })?
+            .map_err(|()| CirrusError::InvalidResponse("instance URL is not hierarchical".into()))?
             .pop_if_empty()
             .extend(segments);
         Ok(url.to_string())
@@ -253,10 +251,10 @@ impl Cloudburst {
 
     /// GET an arbitrary Salesforce path, deserializing the response into `R`.
     ///
-    /// Path resolution follows [`Cloudburst::resolve_url`]'s three-mode
+    /// Path resolution follows [`Cirrus::resolve_url`]'s three-mode
     /// semantics. Use this as the open-ended client escape hatch when no
     /// typed builder exists for the resource you need.
-    pub async fn get<R: DeserializeOwned>(&self, path: &str) -> CloudburstResult<R> {
+    pub async fn get<R: DeserializeOwned>(&self, path: &str) -> CirrusResult<R> {
         let url = self.resolve_url(path);
         self.send::<R, (), ()>(reqwest::Method::GET, &url, None, None)
             .await
@@ -264,7 +262,7 @@ impl Cloudburst {
 
     /// GET with query parameters. `query` is anything `Serialize` —
     /// typically `&[("k", "v")]` or a struct.
-    pub async fn get_with_query<R, Q>(&self, path: &str, query: &Q) -> CloudburstResult<R>
+    pub async fn get_with_query<R, Q>(&self, path: &str, query: &Q) -> CirrusResult<R>
     where
         R: DeserializeOwned,
         Q: Serialize + ?Sized,
@@ -275,7 +273,7 @@ impl Cloudburst {
     }
 
     /// POST a JSON body.
-    pub async fn post<R, B>(&self, path: &str, body: &B) -> CloudburstResult<R>
+    pub async fn post<R, B>(&self, path: &str, body: &B) -> CirrusResult<R>
     where
         R: DeserializeOwned,
         B: Serialize + ?Sized,
@@ -290,7 +288,7 @@ impl Cloudburst {
     /// Salesforce REST proper rarely uses PUT — it's included for symmetry
     /// with the rest of the verb set so the escape hatch can address any
     /// Salesforce surface (Tooling API, Apex REST, etc.) that does.
-    pub async fn put<R, B>(&self, path: &str, body: &B) -> CloudburstResult<R>
+    pub async fn put<R, B>(&self, path: &str, body: &B) -> CirrusResult<R>
     where
         R: DeserializeOwned,
         B: Serialize + ?Sized,
@@ -301,7 +299,7 @@ impl Cloudburst {
     }
 
     /// PATCH a JSON body.
-    pub async fn patch<R, B>(&self, path: &str, body: &B) -> CloudburstResult<R>
+    pub async fn patch<R, B>(&self, path: &str, body: &B) -> CirrusResult<R>
     where
         R: DeserializeOwned,
         B: Serialize + ?Sized,
@@ -313,7 +311,7 @@ impl Cloudburst {
 
     /// DELETE a resource. Salesforce typically returns 204 No Content on
     /// success — call with `R = ()`.
-    pub async fn delete<R: DeserializeOwned>(&self, path: &str) -> CloudburstResult<R> {
+    pub async fn delete<R: DeserializeOwned>(&self, path: &str) -> CirrusResult<R> {
         let url = self.resolve_url(path);
         self.send::<R, (), ()>(reqwest::Method::DELETE, &url, None, None)
             .await
@@ -329,7 +327,7 @@ impl Cloudburst {
         url: &str,
         query: Option<&Q>,
         body: Option<&B>,
-    ) -> CloudburstResult<R>
+    ) -> CirrusResult<R>
     where
         R: DeserializeOwned,
         Q: Serialize + ?Sized,
@@ -340,7 +338,7 @@ impl Cloudburst {
 
     /// Returns a pre-authenticated [`reqwest::RequestBuilder`] targeting
     /// the resolved URL. Path resolution follows
-    /// [`Cloudburst::resolve_url`]'s three-mode semantics; the bearer
+    /// [`Cirrus::resolve_url`]'s three-mode semantics; the bearer
     /// token is injected via [`AuthSession::access_token`]. The caller is
     /// then free to add headers, configure timeouts, set a custom body
     /// (multipart, form, raw bytes), and `.send()` the request.
@@ -352,7 +350,7 @@ impl Cloudburst {
         &self,
         method: reqwest::Method,
         path: &str,
-    ) -> CloudburstResult<reqwest::RequestBuilder> {
+    ) -> CirrusResult<reqwest::RequestBuilder> {
         let url = self.resolve_url(path);
         let token = self.auth.access_token().await?;
         Ok(self.client.request(method, url).bearer_auth(&*token))
@@ -368,7 +366,7 @@ impl Cloudburst {
     ///
     /// To get an auth token for a custom request, use
     /// `client.auth().access_token().await?`.
-    pub async fn execute(&self, request: reqwest::Request) -> CloudburstResult<reqwest::Response> {
+    pub async fn execute(&self, request: reqwest::Request) -> CirrusResult<reqwest::Response> {
         self.client.execute(request).await.map_err(Into::into)
     }
 
@@ -378,7 +376,7 @@ impl Cloudburst {
         url: &str,
         query: Option<&Q>,
         body: Option<&B>,
-    ) -> CloudburstResult<R>
+    ) -> CirrusResult<R>
     where
         R: DeserializeOwned,
         Q: Serialize + ?Sized,
@@ -393,7 +391,7 @@ impl Cloudburst {
             let token_str = token.to_string();
             let mut attempt: u32 = 0;
 
-            let result: CloudburstResult<R> = loop {
+            let result: CirrusResult<R> = loop {
                 let mut request = self
                     .client
                     .request(method.clone(), url)
@@ -430,7 +428,7 @@ impl Cloudburst {
                         }
                     }
                     Err(e) => {
-                        let err: CloudburstError = e.into();
+                        let err: CirrusError = e.into();
                         if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
                             let delay = retry::compute_delay(&self.retry_policy, attempt, None);
                             tokio::time::sleep(delay).await;
@@ -445,16 +443,16 @@ impl Cloudburst {
             // 401 → invalidate the cached token and try once more with
             // a fresh one. If the auth session can't refresh (returns
             // the same token), surface the 401 verbatim.
-            if !auth_retried && let Err(CloudburstError::Api { status: 401, .. }) = &result {
+            if !auth_retried && let Err(CirrusError::Api { status: 401, .. }) = &result {
                 tracing::warn!(
-                    target: "cloudburst::auth",
+                    target: "cirrus::auth",
                     "received 401; invalidating cached token and retrying once",
                 );
                 self.auth.invalidate(&token_str).await;
                 let fresh = self.auth.access_token().await?;
                 if *fresh == token_str {
                     tracing::warn!(
-                        target: "cloudburst::auth",
+                        target: "cirrus::auth",
                         "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
                     );
                     return result;
@@ -471,14 +469,14 @@ impl Cloudburst {
     ///
     /// Used by Bulk 2.0 ingest uploads — the request body is `text/csv`, the
     /// response is the standard JSON job envelope. Path resolution still
-    /// follows [`Cloudburst::resolve_url`]'s three-mode semantics.
+    /// follows [`Cirrus::resolve_url`]'s three-mode semantics.
     pub(crate) async fn send_with_body<R>(
         &self,
         method: reqwest::Method,
         path: &str,
         body: bytes::Bytes,
         content_type: &str,
-    ) -> CloudburstResult<R>
+    ) -> CirrusResult<R>
     where
         R: DeserializeOwned,
     {
@@ -489,7 +487,7 @@ impl Cloudburst {
             let token_str = token.to_string();
             let mut attempt: u32 = 0;
 
-            let result: CloudburstResult<R> = loop {
+            let result: CirrusResult<R> = loop {
                 // bytes::Bytes is Arc-backed — clone is cheap.
                 let request = self
                     .client
@@ -521,7 +519,7 @@ impl Cloudburst {
                         }
                     }
                     Err(e) => {
-                        let err: CloudburstError = e.into();
+                        let err: CirrusError = e.into();
                         if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
                             let delay = retry::compute_delay(&self.retry_policy, attempt, None);
                             tokio::time::sleep(delay).await;
@@ -533,16 +531,16 @@ impl Cloudburst {
                 }
             };
 
-            if !auth_retried && let Err(CloudburstError::Api { status: 401, .. }) = &result {
+            if !auth_retried && let Err(CirrusError::Api { status: 401, .. }) = &result {
                 tracing::warn!(
-                    target: "cloudburst::auth",
+                    target: "cirrus::auth",
                     "received 401; invalidating cached token and retrying once",
                 );
                 self.auth.invalidate(&token_str).await;
                 let fresh = self.auth.access_token().await?;
                 if *fresh == token_str {
                     tracing::warn!(
-                        target: "cloudburst::auth",
+                        target: "cirrus::auth",
                         "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
                     );
                     return result;
@@ -563,7 +561,7 @@ impl Cloudburst {
     /// the form itself isn't Clone, but the underlying `Vec<u8>` JSON
     /// and `bytes::Bytes` blob are cheap to clone.
     ///
-    /// Path resolution follows [`Cloudburst::resolve_url`]'s three-mode
+    /// Path resolution follows [`Cirrus::resolve_url`]'s three-mode
     /// semantics. Goes through the same retry + auth-refresh +
     /// `Sforce-Limit-Info` capture as the other send methods.
     // Internal transport helper: the public surface
@@ -582,7 +580,7 @@ impl Cloudburst {
         blob_filename: &str,
         blob_content_type: &str,
         blob: bytes::Bytes,
-    ) -> CloudburstResult<R>
+    ) -> CirrusResult<R>
     where
         R: DeserializeOwned,
     {
@@ -593,7 +591,7 @@ impl Cloudburst {
             let token_str = token.to_string();
             let mut attempt: u32 = 0;
 
-            let result: CloudburstResult<R> = loop {
+            let result: CirrusResult<R> = loop {
                 // Build a fresh Form per attempt — Form isn't Clone.
                 // The Vec<u8> JSON clone is one alloc (typically <1KB
                 // metadata). The blob goes through Part::stream so that
@@ -604,17 +602,13 @@ impl Cloudburst {
                 let json_part = reqwest::multipart::Part::bytes(json_bytes.clone())
                     .mime_str("application/json")
                     .map_err(|e| {
-                        CloudburstError::InvalidHeader(format!(
-                            "invalid JSON part content-type: {e}"
-                        ))
+                        CirrusError::InvalidHeader(format!("invalid JSON part content-type: {e}"))
                     })?;
                 let blob_part = reqwest::multipart::Part::stream(reqwest::Body::from(blob.clone()))
                     .file_name(blob_filename.to_string())
                     .mime_str(blob_content_type)
                     .map_err(|e| {
-                        CloudburstError::InvalidHeader(format!(
-                            "invalid blob part content-type: {e}"
-                        ))
+                        CirrusError::InvalidHeader(format!("invalid blob part content-type: {e}"))
                     })?;
                 let form = reqwest::multipart::Form::new()
                     .part(json_part_name.to_string(), json_part)
@@ -649,7 +643,7 @@ impl Cloudburst {
                         }
                     }
                     Err(e) => {
-                        let err: CloudburstError = e.into();
+                        let err: CirrusError = e.into();
                         if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
                             let delay = retry::compute_delay(&self.retry_policy, attempt, None);
                             tokio::time::sleep(delay).await;
@@ -661,16 +655,16 @@ impl Cloudburst {
                 }
             };
 
-            if !auth_retried && let Err(CloudburstError::Api { status: 401, .. }) = &result {
+            if !auth_retried && let Err(CirrusError::Api { status: 401, .. }) = &result {
                 tracing::warn!(
-                    target: "cloudburst::auth",
+                    target: "cirrus::auth",
                     "received 401; invalidating cached token and retrying once",
                 );
                 self.auth.invalidate(&token_str).await;
                 let fresh = self.auth.access_token().await?;
                 if *fresh == token_str {
                     tracing::warn!(
-                        target: "cloudburst::auth",
+                        target: "cirrus::auth",
                         "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
                     );
                     return result;
@@ -688,14 +682,14 @@ impl Cloudburst {
     /// Used by Bulk 2.0 result downloads — the response body is `text/csv`
     /// and the caller may need response headers for cursor pagination
     /// (`Sforce-Locator`, `Sforce-NumberOfRecords`). Path resolution still
-    /// follows [`Cloudburst::resolve_url`]'s three-mode semantics.
+    /// follows [`Cirrus::resolve_url`]'s three-mode semantics.
     pub(crate) async fn fetch_raw(
         &self,
         method: reqwest::Method,
         path: &str,
         accept: &str,
         query: Option<&[(&str, &str)]>,
-    ) -> CloudburstResult<(reqwest::header::HeaderMap, bytes::Bytes)> {
+    ) -> CirrusResult<(reqwest::header::HeaderMap, bytes::Bytes)> {
         let url = self.resolve_url(path);
         let mut auth_retried = false;
         loop {
@@ -703,7 +697,7 @@ impl Cloudburst {
             let token_str = token.to_string();
             let mut attempt: u32 = 0;
 
-            let result: CloudburstResult<(reqwest::header::HeaderMap, bytes::Bytes)> = loop {
+            let result: CirrusResult<(reqwest::header::HeaderMap, bytes::Bytes)> = loop {
                 let mut request = self
                     .client
                     .request(method.clone(), &url)
@@ -740,7 +734,7 @@ impl Cloudburst {
                         break Err(response::parse_error_response(status, &bytes));
                     }
                     Err(e) => {
-                        let err: CloudburstError = e.into();
+                        let err: CirrusError = e.into();
                         if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
                             let delay = retry::compute_delay(&self.retry_policy, attempt, None);
                             tokio::time::sleep(delay).await;
@@ -752,16 +746,16 @@ impl Cloudburst {
                 }
             };
 
-            if !auth_retried && let Err(CloudburstError::Api { status: 401, .. }) = &result {
+            if !auth_retried && let Err(CirrusError::Api { status: 401, .. }) = &result {
                 tracing::warn!(
-                    target: "cloudburst::auth",
+                    target: "cirrus::auth",
                     "received 401; invalidating cached token and retrying once",
                 );
                 self.auth.invalidate(&token_str).await;
                 let fresh = self.auth.access_token().await?;
                 if *fresh == token_str {
                     tracing::warn!(
-                        target: "cloudburst::auth",
+                        target: "cirrus::auth",
                         "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
                     );
                     return result;
@@ -789,7 +783,7 @@ impl Cloudburst {
         path: &str,
         query: Option<&[(&str, &str)]>,
         extra_headers: &[(&str, &str)],
-    ) -> CloudburstResult<(u16, bytes::Bytes)> {
+    ) -> CirrusResult<(u16, bytes::Bytes)> {
         let url = self.resolve_url(path);
         let mut auth_retried = false;
         loop {
@@ -797,7 +791,7 @@ impl Cloudburst {
             let token_str = token.to_string();
             let mut attempt: u32 = 0;
 
-            let result: CloudburstResult<(u16, bytes::Bytes)> = loop {
+            let result: CirrusResult<(u16, bytes::Bytes)> = loop {
                 let mut request = self
                     .client
                     .request(method.clone(), &url)
@@ -839,7 +833,7 @@ impl Cloudburst {
                         break Err(response::parse_error_response(status, &bytes));
                     }
                     Err(e) => {
-                        let err: CloudburstError = e.into();
+                        let err: CirrusError = e.into();
                         if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
                             let delay = retry::compute_delay(&self.retry_policy, attempt, None);
                             tokio::time::sleep(delay).await;
@@ -851,16 +845,16 @@ impl Cloudburst {
                 }
             };
 
-            if !auth_retried && let Err(CloudburstError::Api { status: 401, .. }) = &result {
+            if !auth_retried && let Err(CirrusError::Api { status: 401, .. }) = &result {
                 tracing::warn!(
-                    target: "cloudburst::auth",
+                    target: "cirrus::auth",
                     "received 401; invalidating cached token and retrying once",
                 );
                 self.auth.invalidate(&token_str).await;
                 let fresh = self.auth.access_token().await?;
                 if *fresh == token_str {
                     tracing::warn!(
-                        target: "cloudburst::auth",
+                        target: "cirrus::auth",
                         "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
                     );
                     return result;
@@ -873,12 +867,12 @@ impl Cloudburst {
     }
 }
 
-/// Builder for [`Cloudburst`].
+/// Builder for [`Cirrus`].
 ///
 /// Required: an [`AuthSession`] via [`auth`](Self::auth). Everything else has
 /// a sensible default.
 #[derive(Default)]
-pub struct CloudburstBuilder {
+pub struct CirrusBuilder {
     auth: Option<SharedAuth>,
     api_version: Option<String>,
     user_agent: Option<String>,
@@ -886,7 +880,7 @@ pub struct CloudburstBuilder {
     retry_policy: Option<RetryPolicy>,
 }
 
-impl CloudburstBuilder {
+impl CirrusBuilder {
     /// Sets the auth session (any [`AuthSession`] implementation wrapped in
     /// `Arc`). Required.
     pub fn auth(mut self, auth: SharedAuth) -> Self {
@@ -927,8 +921,8 @@ impl CloudburstBuilder {
     }
 
     /// Finalizes the builder.
-    pub fn build(self) -> CloudburstResult<Cloudburst> {
-        let auth = self.auth.ok_or(CloudburstError::MissingField("auth"))?;
+    pub fn build(self) -> CirrusResult<Cirrus> {
+        let auth = self.auth.ok_or(CirrusError::MissingField("auth"))?;
 
         let client = if let Some(c) = self.http_client {
             c
@@ -937,16 +931,15 @@ impl CloudburstBuilder {
             let mut headers = HeaderMap::new();
             headers.insert(
                 USER_AGENT,
-                HeaderValue::from_str(ua)
-                    .map_err(|e| CloudburstError::InvalidHeader(e.to_string()))?,
+                HeaderValue::from_str(ua).map_err(|e| CirrusError::InvalidHeader(e.to_string()))?,
             );
             reqwest::Client::builder()
                 .default_headers(headers)
                 .build()
-                .map_err(CloudburstError::HttpClient)?
+                .map_err(CirrusError::HttpClient)?
         };
 
-        Ok(Cloudburst {
+        Ok(Cirrus {
             client,
             auth,
             api_version: self
@@ -975,12 +968,12 @@ impl CloudburstBuilder {
     /// # Example
     ///
     /// ```no_run
-    /// use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// use cirrus::{Cirrus, auth::StaticTokenAuth};
     /// use std::sync::Arc;
     ///
-    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # async fn example() -> Result<(), cirrus::CirrusError> {
     /// let auth = Arc::new(StaticTokenAuth::new("tok", "https://my-org.my.salesforce.com"));
-    /// let sf = Cloudburst::builder()
+    /// let sf = Cirrus::builder()
     ///     .auth(auth)
     ///     .build_with_latest_version()
     ///     .await?;
@@ -989,10 +982,10 @@ impl CloudburstBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn build_with_latest_version(self) -> CloudburstResult<Cloudburst> {
+    pub async fn build_with_latest_version(self) -> CirrusResult<Cirrus> {
         let bootstrap = self.build()?;
         let latest = bootstrap.latest_api_version().await?;
-        Ok(Cloudburst {
+        Ok(Cirrus {
             api_version: latest,
             ..bootstrap
         })
@@ -1006,15 +999,15 @@ mod tests {
     use crate::auth::StaticTokenAuth;
     use std::sync::Arc;
 
-    fn fixture(instance: &str) -> Cloudburst {
+    fn fixture(instance: &str) -> Cirrus {
         let auth = Arc::new(StaticTokenAuth::new("tok", instance));
-        Cloudburst::builder().auth(auth).build().unwrap()
+        Cirrus::builder().auth(auth).build().unwrap()
     }
 
     #[test]
     fn build_requires_auth() {
-        let err = Cloudburst::builder().build().unwrap_err();
-        assert!(matches!(err, CloudburstError::MissingField("auth")));
+        let err = Cirrus::builder().build().unwrap_err();
+        assert!(matches!(err, CirrusError::MissingField("auth")));
     }
 
     #[test]
@@ -1058,7 +1051,7 @@ mod tests {
     #[test]
     fn api_version_can_be_overridden() {
         let auth = Arc::new(StaticTokenAuth::new("tok", "https://my.salesforce.com"));
-        let sf = Cloudburst::builder()
+        let sf = Cirrus::builder()
             .auth(auth)
             .api_version("v61.0")
             .build()
@@ -1073,9 +1066,9 @@ mod tests {
         use wiremock::matchers::{body_json, header, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        fn server_fixture(uri: String) -> Cloudburst {
+        fn server_fixture(uri: String) -> Cirrus {
             let auth = Arc::new(StaticTokenAuth::new("tok", uri));
-            Cloudburst::builder().auth(auth).build().unwrap()
+            Cirrus::builder().auth(auth).build().unwrap()
         }
 
         #[tokio::test]
@@ -1258,9 +1251,9 @@ mod tests {
             }
         }
 
-        fn fixture_with_policy(uri: String, policy: RetryPolicy) -> Cloudburst {
+        fn fixture_with_policy(uri: String, policy: RetryPolicy) -> Cirrus {
             let auth = Arc::new(StaticTokenAuth::new("tok", uri));
-            Cloudburst::builder()
+            Cirrus::builder()
                 .auth(auth)
                 .retry_policy(policy)
                 .build()
@@ -1331,7 +1324,7 @@ mod tests {
             let sf = fixture_with_policy(server.uri(), fast_retry_policy());
             let err = sf.get::<Value>("limits").await.unwrap_err();
             match err {
-                CloudburstError::Api { status, .. } => assert_eq!(status, 503),
+                CirrusError::Api { status, .. } => assert_eq!(status, 503),
                 other => panic!("expected Api error, got {other:?}"),
             }
         }
@@ -1353,7 +1346,7 @@ mod tests {
 
             let sf = fixture_with_policy(server.uri(), fast_retry_policy());
             let err = sf.get::<Value>("limits").await.unwrap_err();
-            assert!(matches!(err, CloudburstError::Api { status: 404, .. }));
+            assert!(matches!(err, CirrusError::Api { status: 404, .. }));
         }
 
         #[tokio::test]
@@ -1377,7 +1370,7 @@ mod tests {
                 .post::<Value, _>("sobjects/Account", &json!({"Name": "Acme"}))
                 .await
                 .unwrap_err();
-            assert!(matches!(err, CloudburstError::Api { status: 500, .. }));
+            assert!(matches!(err, CirrusError::Api { status: 500, .. }));
         }
 
         #[tokio::test]
@@ -1414,7 +1407,7 @@ mod tests {
 
             let sf = fixture_with_policy(server.uri(), RetryPolicy::none());
             let err = sf.get::<Value>("limits").await.unwrap_err();
-            assert!(matches!(err, CloudburstError::Api { status: 429, .. }));
+            assert!(matches!(err, CirrusError::Api { status: 429, .. }));
         }
 
         #[tokio::test]
@@ -1528,7 +1521,7 @@ mod tests {
     mod auth_refresh {
         use super::*;
         use crate::auth::{AuthSession, SharedAuth};
-        use crate::error::CloudburstResult;
+        use crate::error::CirrusResult;
         use async_trait::async_trait;
         use serde_json::{Value, json};
         use std::borrow::Cow;
@@ -1563,7 +1556,7 @@ mod tests {
 
         #[async_trait]
         impl AuthSession for RotatingAuth {
-            async fn access_token(&self) -> CloudburstResult<Cow<'_, str>> {
+            async fn access_token(&self) -> CirrusResult<Cow<'_, str>> {
                 let n = self.access_count.fetch_add(1, Ordering::SeqCst);
                 let idx = n.min(self.tokens.len() - 1);
                 Ok(Cow::Borrowed(&self.tokens[idx]))
@@ -1580,12 +1573,12 @@ mod tests {
             }
         }
 
-        fn fixture(_uri: String, auth: SharedAuth) -> Cloudburst {
+        fn fixture(_uri: String, auth: SharedAuth) -> Cirrus {
             // _uri unused here — the AuthSession's instance_url drives
             // URL resolution. Keep the param for symmetry with other
             // test fixtures; the caller already has the server URI in
             // hand from MockServer::start.
-            Cloudburst::builder()
+            Cirrus::builder()
                 .auth(auth)
                 .retry_policy(crate::RetryPolicy::none()) // isolate auth-retry from transient-retry
                 .build()
@@ -1650,7 +1643,7 @@ mod tests {
             let sf = fixture(server.uri(), auth);
 
             let err = sf.get::<Value>("limits").await.unwrap_err();
-            assert!(matches!(err, CloudburstError::Api { status: 401, .. }));
+            assert!(matches!(err, CirrusError::Api { status: 401, .. }));
         }
 
         #[tokio::test]
@@ -1674,7 +1667,7 @@ mod tests {
             let sf = fixture(server.uri(), auth);
 
             let err = sf.get::<Value>("limits").await.unwrap_err();
-            assert!(matches!(err, CloudburstError::Api { status: 401, .. }));
+            assert!(matches!(err, CirrusError::Api { status: 401, .. }));
         }
 
         #[tokio::test]
@@ -1719,9 +1712,9 @@ mod property_tests {
     use proptest::prelude::*;
     use std::sync::Arc;
 
-    fn fixture(instance: &str) -> Cloudburst {
+    fn fixture(instance: &str) -> Cirrus {
         let auth = Arc::new(StaticTokenAuth::new("tok", instance));
-        Cloudburst::builder().auth(auth).build().unwrap()
+        Cirrus::builder().auth(auth).build().unwrap()
     }
 
     /// Path-shaped strings: ASCII alphanumerics plus characters that

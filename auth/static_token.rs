@@ -7,14 +7,14 @@
 //! Client Credentials, Device) live in sibling modules.
 
 use crate::auth::AuthSession;
-use crate::error::CloudburstResult;
+use crate::error::CirrusResult;
 use async_trait::async_trait;
 use std::borrow::Cow;
 
 /// Authentication backed by a fixed access token and instance URL.
 ///
 /// Once the token expires, requests will start failing with
-/// [`crate::error::CloudburstError::Api`] containing
+/// [`crate::error::CirrusError::Api`] containing
 /// `INVALID_SESSION_ID`. This type does not refresh; pair it with a flow
 /// that does (or rebuild the client) to recover.
 #[derive(Debug, Clone)]
@@ -38,16 +38,16 @@ impl StaticTokenAuth {
     /// # Example
     ///
     /// ```no_run
-    /// use cloudburst_sdk::auth::StaticTokenAuth;
-    /// use cloudburst_sdk::Cloudburst;
+    /// use cirrus::auth::StaticTokenAuth;
+    /// use cirrus::Cirrus;
     /// use std::sync::Arc;
     ///
-    /// # fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # fn example() -> Result<(), cirrus::CirrusError> {
     /// let auth = Arc::new(StaticTokenAuth::new(
     ///     "00D...!AQ...",
     ///     "https://my-org.my.salesforce.com",
     /// ));
-    /// let sf = Cloudburst::builder().auth(auth).build()?;
+    /// let sf = Cirrus::builder().auth(auth).build()?;
     /// # let _ = sf;
     /// # Ok(())
     /// # }
@@ -66,7 +66,7 @@ impl StaticTokenAuth {
 
 #[async_trait]
 impl AuthSession for StaticTokenAuth {
-    async fn access_token(&self) -> CloudburstResult<Cow<'_, str>> {
+    async fn access_token(&self) -> CirrusResult<Cow<'_, str>> {
         Ok(Cow::Borrowed(&self.access_token))
     }
 

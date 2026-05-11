@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`cloudburst-sdk` is a Rust HTTP client for the Salesforce REST API (unaffiliated with Salesforce). Pre-1.0; not yet on crates.io.
+`cirrus` is a Rust HTTP client for the Salesforce REST API (unaffiliated with Salesforce). Pre-1.0; not yet on crates.io.
 
 Shipped surface (live snapshot in `TODO.org`):
 - All five priority OAuth flows (JWT, Refresh, Client Credentials, Web Server PKCE, Token Exchange) + Static.
@@ -18,7 +18,7 @@ Tests: ~256 unit + 2 doctest, all wiremock-backed, fast (<1s wall). No SOAP, no 
 
 ### Open-ended client (escape hatch)
 
-Every typed handler layers over a small set of public verb methods on `Cloudburst`: `get`, `get_with_query`, `post`, `put`, `patch`, `delete`, plus `request_builder` (auth-injected) and `execute` (hands-off bypass). Path resolution is three-mode:
+Every typed handler layers over a small set of public verb methods on `Cirrus`: `get`, `get_with_query`, `post`, `put`, `patch`, `delete`, plus `request_builder` (auth-injected) and `execute` (hands-off bypass). Path resolution is three-mode:
 
 - **Relative** (`limits`) → versioned: `{instance}/services/data/{version}/limits`
 - **Leading slash** (`/services/apexrest/foo`) → instance-rooted
@@ -32,7 +32,7 @@ Four internal send paths cover every wire shape we've needed. Pick by request/re
 
 | Helper | Request body | Response | Used by |
 |---|---|---|---|
-| `Cloudburst::send` (and public verbs) | `Serialize` JSON or none | typed JSON → `R` | most REST |
+| `Cirrus::send` (and public verbs) | `Serialize` JSON or none | typed JSON → `R` | most REST |
 | `send_with_body` | raw `bytes::Bytes` + Content-Type | typed JSON → `R` | Bulk 2.0 CSV ingest upload |
 | `fetch_raw` | query params only | `(HeaderMap, bytes::Bytes)` | Bulk 2.0 query results, Event Monitoring downloads |
 | `send_multipart` | JSON metadata part + binary part | typed JSON → `R` | sObject blob inserts/updates (ContentVersion / Document / Attachment) |
@@ -42,14 +42,14 @@ If you find yourself wanting a fifth, first check whether the existing four woul
 ### Handler module conventions
 
 - One module per platform-level surface: `handlers/{sobjects, query, search, composite, bulk, tooling, apex, event_monitoring, limits, versions}.rs`.
-- Handler struct holds `&'a Cloudburst`; constructed via top-level methods on `Cloudburst` (e.g., `sf.tooling()`, `sf.bulk().query()`, `sf.sobject("Account")`).
+- Handler struct holds `&'a Cirrus`; constructed via top-level methods on `Cirrus` (e.g., `sf.tooling()`, `sf.bulk().query()`, `sf.sobject("Account")`).
 - Methods that return records expose two variants: the default (returns `serde_json::Value`) and `_as::<R>` for typed deserialization.
 - **Never** model org-specific types. Platform envelopes (response shapes Salesforce defines) live in `response.rs` and are re-exported at the crate root; record types are caller-supplied via the generic `R: DeserializeOwned`.
 - Pagination support: handlers with paginated GETs add `_stream` / `_stream_as` variants returning `pagination::Records<R>` (a `futures::Stream`). See `query`/`tooling.query` for the pattern.
 
 ## Documentation fetching
 
-`scripts/sf-doc.nu` is the canonical doc-audit tool. It hits `developer.salesforce.com`'s internal JSON content API directly (not the SPA — that path is slower and racy). Cache lands in `~/.cache/cloudburst-sdk/sf-docs/`.
+`scripts/sf-doc.nu` is the canonical doc-audit tool. It hits `developer.salesforce.com`'s internal JSON content API directly (not the SPA — that path is slower and racy). Cache lands in `~/.cache/cirrus/sf-docs/`.
 
 ```bash
 # Discover canonical page IDs for a guide (writes manifest-{guide}.json to cache).
@@ -89,7 +89,7 @@ cp .env.example .env
 cargo nextest run --test integration --run-ignored only -- --test-threads=1
 ```
 
-The harness (`tests/integration/common.rs`) refuses to run unless `INSTANCE_URL` matches a known sandbox/dev/scratch My Domain pattern: `.sandbox.`, `.develop.`, `.scratch.`, or `.trailblaze.` infix before `.my.salesforce.com`. The `.trailblaze.` partition is used by free Developer Edition orgs from developer.salesforce.com signup (subdomain ends in `-dev-ed`). Override with `CLOUDBURST_INTEGRATION_FORCE=1` only after verifying the target org is safe for destructive writes — the safe-list catches Enhanced Domains URLs but not legacy pre-Spring-'23 sandbox URLs, and Salesforce occasionally introduces new partition infixes (audit when adding orgs in unfamiliar shapes).
+The harness (`tests/integration/common.rs`) refuses to run unless `INSTANCE_URL` matches a known sandbox/dev/scratch My Domain pattern: `.sandbox.`, `.develop.`, `.scratch.`, or `.trailblaze.` infix before `.my.salesforce.com`. The `.trailblaze.` partition is used by free Developer Edition orgs from developer.salesforce.com signup (subdomain ends in `-dev-ed`). Override with `CIRRUS_INTEGRATION_FORCE=1` only after verifying the target org is safe for destructive writes — the safe-list catches Enhanced Domains URLs but not legacy pre-Spring-'23 sandbox URLs, and Salesforce occasionally introduces new partition infixes (audit when adding orgs in unfamiliar shapes).
 
 Auth supports two paths: paste a static token from `sf org display`, or configure JWT bearer flow with a connected app + private key. Static-token mode is the easy bootstrap; JWT exercises the full auth flow.
 
@@ -97,10 +97,10 @@ Don't add network-touching tests to the default (`cargo test`) suite — those s
 
 ## Memory and cross-session notes
 
-Persistent notes the user has flagged for future sessions live in `~/.claude/projects/-home-ryan-Projects-cloudburst-sdk/memory/`. Notable entries:
+Persistent notes the user has flagged for future sessions live in `~/.claude/projects/-home-ryan-Projects-cirrus/memory/`. Notable entries:
 
 - **No legacy or deprecated Salesforce APIs.** Skip anything Salesforce marks legacy (Bulk 1.0, SOAP login, username-password OAuth, etc.).
-- **Doc cache goes in `~/.cache/cloudburst-sdk/sf-docs/`**, not `/tmp` (NixOS tmpfs wipes /tmp on reboot).
+- **Doc cache goes in `~/.cache/cirrus/sf-docs/`**, not `/tmp` (NixOS tmpfs wipes /tmp on reboot).
 - **The Salesforce docs content API** — see `reference_sf_doc_api.md` for endpoint details and the help.salesforce.com gap.
 
 ## Repository Layout

@@ -28,7 +28,7 @@
 
 use crate::auth::AuthSession;
 use crate::auth::token_endpoint::{check_instance_url, exchange};
-use crate::error::{CloudburstError, CloudburstResult};
+use crate::error::{CirrusError, CirrusResult};
 use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
@@ -104,11 +104,11 @@ impl JwtAuth {
     /// # Example
     ///
     /// ```no_run
-    /// use cloudburst_sdk::auth::JwtAuth;
-    /// use cloudburst_sdk::Cloudburst;
+    /// use cirrus::auth::JwtAuth;
+    /// use cirrus::Cirrus;
     /// use std::sync::Arc;
     ///
-    /// # fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # fn example() -> Result<(), cirrus::CirrusError> {
     /// let auth = JwtAuth::builder()
     ///     .consumer_key("3MVG9...")
     ///     .username("integration-user@example.com")
@@ -116,7 +116,7 @@ impl JwtAuth {
     ///     .instance_url("https://my-org.my.salesforce.com")
     ///     .private_key_pem_file("./private.pem")?
     ///     .build()?;
-    /// let sf = Cloudburst::builder().auth(Arc::new(auth)).build()?;
+    /// let sf = Cirrus::builder().auth(Arc::new(auth)).build()?;
     /// # let _ = sf;
     /// # Ok(())
     /// # }
@@ -125,9 +125,9 @@ impl JwtAuth {
         JwtAuthBuilder::default()
     }
 
-    async fn mint_token(&self) -> CloudburstResult<CachedToken> {
+    async fn mint_token(&self) -> CirrusResult<CachedToken> {
         tracing::info!(
-            target: "cloudburst::auth",
+            target: "cirrus::auth",
             flow = "jwt-bearer",
             login_url = %self.login_url,
             "minting fresh access token",
@@ -135,7 +135,7 @@ impl JwtAuth {
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
-            .map_err(|e| CloudburstError::Auth(format!("system clock before UNIX epoch: {e}")))?;
+            .map_err(|e| CirrusError::Auth(format!("system clock before UNIX epoch: {e}")))?;
 
         let claims = JwtClaims {
             iss: self.consumer_key.clone(),
@@ -146,7 +146,7 @@ impl JwtAuth {
 
         let header = Header::new(Algorithm::RS256);
         let assertion = jsonwebtoken::encode(&header, &claims, &self.encoding_key)
-            .map_err(|e| CloudburstError::Auth(format!("JWT signing failed: {e}")))?;
+            .map_err(|e| CirrusError::Auth(format!("JWT signing failed: {e}")))?;
 
         let body = [
             ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
@@ -165,7 +165,7 @@ impl JwtAuth {
 
 #[async_trait]
 impl AuthSession for JwtAuth {
-    async fn access_token(&self) -> CloudburstResult<Cow<'_, str>> {
+    async fn access_token(&self) -> CirrusResult<Cow<'_, str>> {
         // Fast path — read lock, return clone of cached token if still valid.
         {
             let guard = self.cached.read().await;
@@ -202,14 +202,14 @@ impl AuthSession for JwtAuth {
             && cached.access_token == stale_token
         {
             tracing::debug!(
-                target: "cloudburst::auth",
+                target: "cirrus::auth",
                 flow = "jwt-bearer",
                 "invalidating cached token (CAS matched)",
             );
             *guard = None;
         } else {
             tracing::trace!(
-                target: "cloudburst::auth",
+                target: "cirrus::auth",
                 flow = "jwt-bearer",
                 "invalidate called but cached token differs (concurrent refresh?); no-op",
             );
@@ -258,23 +258,23 @@ impl JwtAuthBuilder {
     }
 
     /// Loads the RSA private key from a PEM file at the given path.
-    pub fn private_key_pem_file(mut self, path: impl Into<Utf8PathBuf>) -> CloudburstResult<Self> {
+    pub fn private_key_pem_file(mut self, path: impl Into<Utf8PathBuf>) -> CirrusResult<Self> {
         let path = path.into();
         let bytes = fs_err::read(path.as_std_path())
-            .map_err(|e| CloudburstError::Auth(format!("failed to read private key: {e}")))?;
+            .map_err(|e| CirrusError::Auth(format!("failed to read private key: {e}")))?;
         self.encoding_key = Some(
             EncodingKey::from_rsa_pem(&bytes)
-                .map_err(|e| CloudburstError::Auth(format!("invalid RSA PEM key: {e}")))?,
+                .map_err(|e| CirrusError::Auth(format!("invalid RSA PEM key: {e}")))?,
         );
         Ok(self)
     }
 
     /// Loads the RSA private key directly from PEM-encoded bytes. Useful
     /// when the key is held in memory (e.g. fetched from a secret manager).
-    pub fn private_key_pem_bytes(mut self, bytes: &[u8]) -> CloudburstResult<Self> {
+    pub fn private_key_pem_bytes(mut self, bytes: &[u8]) -> CirrusResult<Self> {
         self.encoding_key = Some(
             EncodingKey::from_rsa_pem(bytes)
-                .map_err(|e| CloudburstError::Auth(format!("invalid RSA PEM key: {e}")))?,
+                .map_err(|e| CirrusError::Auth(format!("invalid RSA PEM key: {e}")))?,
         );
         Ok(self)
     }
@@ -318,19 +318,17 @@ impl JwtAuthBuilder {
     }
 
     /// Finalizes the builder.
-    pub fn build(self) -> CloudburstResult<JwtAuth> {
+    pub fn build(self) -> CirrusResult<JwtAuth> {
         let consumer_key = self
             .consumer_key
-            .ok_or(CloudburstError::MissingField("consumer_key"))?;
-        let username = self
-            .username
-            .ok_or(CloudburstError::MissingField("username"))?;
+            .ok_or(CirrusError::MissingField("consumer_key"))?;
+        let username = self.username.ok_or(CirrusError::MissingField("username"))?;
         let encoding_key = self
             .encoding_key
-            .ok_or(CloudburstError::MissingField("private_key"))?;
+            .ok_or(CirrusError::MissingField("private_key"))?;
         let mut instance_url = self
             .instance_url
-            .ok_or(CloudburstError::MissingField("instance_url"))?;
+            .ok_or(CirrusError::MissingField("instance_url"))?;
         if instance_url.ends_with('/') {
             instance_url.pop();
         }
@@ -387,7 +385,7 @@ mod tests {
             .instance_url("https://x")
             .build()
             .unwrap_err();
-        assert!(matches!(err, CloudburstError::MissingField("consumer_key")));
+        assert!(matches!(err, CirrusError::MissingField("consumer_key")));
     }
 
     #[test]
@@ -399,7 +397,7 @@ mod tests {
             .instance_url("https://x")
             .build()
             .unwrap_err();
-        assert!(matches!(err, CloudburstError::MissingField("username")));
+        assert!(matches!(err, CirrusError::MissingField("username")));
     }
 
     #[test]
@@ -410,7 +408,7 @@ mod tests {
             .instance_url("https://x")
             .build()
             .unwrap_err();
-        assert!(matches!(err, CloudburstError::MissingField("private_key")));
+        assert!(matches!(err, CirrusError::MissingField("private_key")));
     }
 
     #[test]
@@ -422,7 +420,7 @@ mod tests {
             .unwrap()
             .build()
             .unwrap_err();
-        assert!(matches!(err, CloudburstError::MissingField("instance_url")));
+        assert!(matches!(err, CirrusError::MissingField("instance_url")));
     }
 
     #[test]
@@ -430,7 +428,7 @@ mod tests {
         let err = JwtAuth::builder()
             .private_key_pem_bytes(b"not a pem")
             .unwrap_err();
-        assert!(matches!(err, CloudburstError::Auth(_)));
+        assert!(matches!(err, CirrusError::Auth(_)));
     }
 
     #[test]
@@ -529,7 +527,7 @@ mod tests {
 
         let err = auth.access_token().await.unwrap_err();
         match err {
-            CloudburstError::OAuth {
+            CirrusError::OAuth {
                 error,
                 error_description,
             } => {
@@ -558,7 +556,7 @@ mod tests {
             .unwrap();
 
         let err = auth.access_token().await.unwrap_err();
-        assert!(matches!(err, CloudburstError::Auth(_)));
+        assert!(matches!(err, CirrusError::Auth(_)));
     }
 
     /// `invalidate(stale_token)` is a compare-and-swap: it should

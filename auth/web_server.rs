@@ -27,7 +27,7 @@
 //! With a refresh token in hand, build a [`crate::auth::RefreshTokenAuth`]:
 //!
 //! ```no_run
-//! # use cloudburst_sdk::auth::{RefreshTokenAuth, WebServerFlow};
+//! # use cirrus::auth::{RefreshTokenAuth, WebServerFlow};
 //! # async fn ex(http: &reqwest::Client) -> Result<(), Box<dyn std::error::Error>> {
 //! # let flow = WebServerFlow::builder()
 //! #     .consumer_key("k").redirect_uri("https://app/cb").build()?;
@@ -51,7 +51,7 @@
 //! The builder treats `consumer_secret` as optional accordingly.
 
 use crate::auth::token_endpoint::exchange;
-use crate::error::{CloudburstError, CloudburstResult};
+use crate::error::{CirrusError, CirrusResult};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
@@ -98,7 +98,7 @@ impl WebServerFlow {
     /// Phase 1 — generate a fresh PKCE verifier + state nonce, build the
     /// authorization URL, and return both. The caller redirects the user
     /// to the URL and persists the [`PendingExchange`] until the callback.
-    pub fn start(&self) -> CloudburstResult<(String, PendingExchange)> {
+    pub fn start(&self) -> CirrusResult<(String, PendingExchange)> {
         let code_verifier = random_b64url(VERIFIER_BYTES)?;
         let state = random_b64url(STATE_BYTES)?;
         let code_challenge = pkce_s256_challenge(&code_verifier);
@@ -165,11 +165,11 @@ impl PendingExchange {
         code: &str,
         returned_state: &str,
         http: &reqwest::Client,
-    ) -> CloudburstResult<CompletedSession> {
+    ) -> CirrusResult<CompletedSession> {
         // CSRF defense: the state we generated in start() must match what
         // the IdP echoed back. A mismatch typically means a forged callback.
         if returned_state != self.state {
-            return Err(CloudburstError::Auth(
+            return Err(CirrusError::Auth(
                 "state mismatch in OAuth callback".to_string(),
             ));
         }
@@ -314,13 +314,13 @@ impl WebServerFlowBuilder {
     }
 
     /// Finalizes the builder.
-    pub fn build(self) -> CloudburstResult<WebServerFlow> {
+    pub fn build(self) -> CirrusResult<WebServerFlow> {
         let consumer_key = self
             .consumer_key
-            .ok_or(CloudburstError::MissingField("consumer_key"))?;
+            .ok_or(CirrusError::MissingField("consumer_key"))?;
         let redirect_uri = self
             .redirect_uri
-            .ok_or(CloudburstError::MissingField("redirect_uri"))?;
+            .ok_or(CirrusError::MissingField("redirect_uri"))?;
         let mut login_url = self
             .login_url
             .unwrap_or_else(|| PRODUCTION_LOGIN_URL.to_string());
@@ -342,10 +342,9 @@ impl WebServerFlowBuilder {
 /// Returns `len` cryptographically random bytes encoded as URL-safe base64
 /// without padding — the format RFC 7636 requires for `code_verifier` and
 /// the format we use for `state` to keep it URL-safe.
-fn random_b64url(len: usize) -> CloudburstResult<String> {
+fn random_b64url(len: usize) -> CirrusResult<String> {
     let mut bytes = vec![0u8; len];
-    getrandom::fill(&mut bytes)
-        .map_err(|e| CloudburstError::Auth(format!("CSPRNG failure: {e}")))?;
+    getrandom::fill(&mut bytes).map_err(|e| CirrusError::Auth(format!("CSPRNG failure: {e}")))?;
     Ok(URL_SAFE_NO_PAD.encode(&bytes))
 }
 
@@ -406,7 +405,7 @@ mod tests {
             .redirect_uri("https://x")
             .build()
             .unwrap_err();
-        assert!(matches!(err, CloudburstError::MissingField("consumer_key")));
+        assert!(matches!(err, CirrusError::MissingField("consumer_key")));
     }
 
     #[test]
@@ -415,7 +414,7 @@ mod tests {
             .consumer_key("k")
             .build()
             .unwrap_err();
-        assert!(matches!(err, CloudburstError::MissingField("redirect_uri")));
+        assert!(matches!(err, CirrusError::MissingField("redirect_uri")));
     }
 
     #[test]
@@ -564,7 +563,7 @@ mod tests {
             .complete("code", "wrong-state", &reqwest::Client::new())
             .await
             .unwrap_err();
-        assert!(matches!(err, CloudburstError::Auth(_)));
+        assert!(matches!(err, CirrusError::Auth(_)));
     }
 
     #[tokio::test]
@@ -651,7 +650,7 @@ mod tests {
             .complete("c", &state, &reqwest::Client::new())
             .await
             .unwrap_err();
-        assert!(matches!(err, CloudburstError::OAuth { .. }));
+        assert!(matches!(err, CirrusError::OAuth { .. }));
     }
 
     struct BodyCapturingResponder {

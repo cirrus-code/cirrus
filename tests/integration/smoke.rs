@@ -12,7 +12,7 @@
 //! sandbox/dev/scratch org without setup.
 
 use crate::common::try_init_client;
-use cloudburst_sdk::ApiVersion;
+use cirrus::ApiVersion;
 
 #[tokio::test]
 #[ignore]
@@ -89,8 +89,8 @@ async fn latest_api_version_returns_v_prefixed_string() {
 #[tokio::test]
 #[ignore]
 async fn build_with_latest_version_uses_negotiated_value() {
-    use cloudburst_sdk::Cloudburst;
-    use cloudburst_sdk::auth::StaticTokenAuth;
+    use cirrus::Cirrus;
+    use cirrus::auth::StaticTokenAuth;
     use std::sync::Arc;
 
     let Some(bootstrap) = try_init_client().await else {
@@ -108,7 +108,7 @@ async fn build_with_latest_version_uses_negotiated_value() {
     };
     let url = std::env::var(super::common::ENV_INSTANCE_URL).unwrap();
     let auth = Arc::new(StaticTokenAuth::new(token, url));
-    let sf = Cloudburst::builder()
+    let sf = Cirrus::builder()
         .auth(auth)
         .build_with_latest_version()
         .await

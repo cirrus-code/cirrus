@@ -1,17 +1,17 @@
-//! Error types for the Cloudburst SDK.
+//! Error types for the Cirrus SDK.
 //!
 //! Salesforce REST endpoints return errors as a JSON array of objects with a
 //! consistent shape (`message`, `errorCode`, optional `fields`), regardless of
 //! the success-response shape. [`SalesforceError`] models that shape, and
-//! [`CloudburstError::Api`] carries the parsed array along with the HTTP
+//! [`CirrusError::Api`] carries the parsed array along with the HTTP
 //! status. OAuth token endpoints use a different shape (`error` /
-//! `error_description`), surfaced via [`CloudburstError::OAuth`].
+//! `error_description`), surfaced via [`CirrusError::OAuth`].
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Specialized `Result` type for Cloudburst operations.
-pub type CloudburstResult<T> = Result<T, CloudburstError>;
+/// Specialized `Result` type for Cirrus operations.
+pub type CirrusResult<T> = Result<T, CirrusError>;
 
 /// A single Salesforce API error entry.
 ///
@@ -30,9 +30,9 @@ pub struct SalesforceError {
     pub fields: Vec<String>,
 }
 
-/// Errors produced by the Cloudburst client.
+/// Errors produced by the Cirrus client.
 #[derive(Debug, Error)]
-pub enum CloudburstError {
+pub enum CirrusError {
     /// A required builder field was not set.
     #[error("missing required builder field: {0}")]
     MissingField(&'static str),
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn display_errors_formats_single_error() {
-        let err = CloudburstError::Api {
+        let err = CirrusError::Api {
             status: 400,
             errors: vec![SalesforceError {
                 message: "Required field missing".to_string(),
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn display_errors_falls_back_to_raw_body() {
-        let err = CloudburstError::Api {
+        let err = CirrusError::Api {
             status: 500,
             errors: vec![],
             raw: Some("Internal Server Error".to_string()),

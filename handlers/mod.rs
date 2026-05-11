@@ -2,7 +2,7 @@
 //!
 //! The module layout mirrors how Salesforce organizes its own APIs: each
 //! submodule corresponds to one platform-level API surface (sObjects, query,
-//! composite, bulk, tooling, etc.). Top-level methods on [`Cloudburst`]
+//! composite, bulk, tooling, etc.). Top-level methods on [`Cirrus`]
 //! return either a *handler struct* (`client.sobjects(...)`, `client.bulk()`)
 //! or a directly-invokable *verb* (`client.query(...)`, `client.versions()`).
 //!
@@ -10,29 +10,29 @@
 //!
 //! Two patterns are blessed; pick by surface shape:
 //!
-//! ### Pattern A — verb method on [`Cloudburst`]
+//! ### Pattern A — verb method on [`Cirrus`]
 //!
 //! For surfaces with **no intrinsic scoping** — a single entry point, no
 //! per-call configuration beyond the request body. Examples:
-//! [`Cloudburst::query`], [`Cloudburst::versions`], [`Cloudburst::search`].
-//! No handler struct; methods live in `impl Cloudburst { ... }` blocks
+//! [`Cirrus::query`], [`Cirrus::versions`], [`Cirrus::search`].
+//! No handler struct; methods live in `impl Cirrus { ... }` blocks
 //! inside the surface's module.
 //!
-//! ### Pattern B — handler struct returned by a method on [`Cloudburst`]
+//! ### Pattern B — handler struct returned by a method on [`Cirrus`]
 //!
 //! For surfaces with **intrinsic scoping** (per-object / per-job / per-flow)
-//! or **multiple sub-surfaces**. The handler holds `&'a Cloudburst` and
+//! or **multiple sub-surfaces**. The handler holds `&'a Cirrus` and
 //! exposes endpoint methods or returns sub-handlers. Examples:
 //!
-//! - [`Cloudburst::sobject`]`("Account")` → [`SObjectHandler`] — scoped to
+//! - [`Cirrus::sobject`]`("Account")` → [`SObjectHandler`] — scoped to
 //!   one sObject by name.
-//! - [`Cloudburst::bulk`]`()` → [`BulkHandler`] → `.ingest()` /
+//! - [`Cirrus::bulk`]`()` → [`BulkHandler`] → `.ingest()` /
 //!   `.query()` → sub-handlers — multi-flow API.
-//! - [`Cloudburst::composite`]`()` → [`CompositeHandler`] →
+//! - [`Cirrus::composite`]`()` → [`CompositeHandler`] →
 //!   `.sobjects()` → sub-handler — nested surface with its own API.
 //!
 //! Sub-handlers follow the same shape: returned by a method on the parent
-//! handler, hold `&'a Cloudburst` (not `&'a ParentHandler`).
+//! handler, hold `&'a Cirrus` (not `&'a ParentHandler`).
 //!
 //! ### Choosing between A and B
 //!
@@ -48,9 +48,9 @@
 //!
 //! # Universal rules (both patterns)
 //!
-//! 1. **Layer over the public verb methods on [`Cloudburst`]**
+//! 1. **Layer over the public verb methods on [`Cirrus`]**
 //!    (`get`, `get_with_query`, `post`, `put`, `patch`, `delete`). Use
-//!    [`crate::Cloudburst::versioned_segments`] + `send_at` only when a
+//!    [`crate::Cirrus::versioned_segments`] + `send_at` only when a
 //!    path segment needs percent-encoding (e.g., upsert by external ID
 //!    with `/` in the value). **Don't introduce parallel transport
 //!    code** — the four send paths in `lib.rs` are the sanctioned set.
@@ -103,26 +103,26 @@
 //!   //! Doc comment with module overview, wire shape, and any wire
 //!   //! warts worth flagging.
 //!
-//!   use crate::Cloudburst;
-//!   use crate::error::CloudburstResult;
+//!   use crate::Cirrus;
+//!   use crate::error::CirrusResult;
 //!   use crate::response::{...};      // platform envelope types only
 //!   use serde::de::DeserializeOwned;
 //!   use serde_json::Value;
 //!
-//!   impl Cloudburst {
+//!   impl Cirrus {
 //!       pub fn {name}(&self) -> {Name}Handler<'_> { ... }   // for Pattern B
 //!       // or:
-//!       pub async fn {verb}(&self, ...) -> CloudburstResult<...> { ... }  // Pattern A
+//!       pub async fn {verb}(&self, ...) -> CirrusResult<...> { ... }  // Pattern A
 //!   }
 //!
 //!   #[derive(Debug)]
-//!   pub struct {Name}Handler<'a> { client: &'a Cloudburst, ... }
+//!   pub struct {Name}Handler<'a> { client: &'a Cirrus, ... }
 //!
 //!   impl<'a> {Name}Handler<'a> {
-//!       pub async fn endpoint(&self, ...) -> CloudburstResult<Value> {
+//!       pub async fn endpoint(&self, ...) -> CirrusResult<Value> {
 //!           self.endpoint_as().await
 //!       }
-//!       pub async fn endpoint_as<R: DeserializeOwned>(&self, ...) -> CloudburstResult<R> {
+//!       pub async fn endpoint_as<R: DeserializeOwned>(&self, ...) -> CirrusResult<R> {
 //!           self.client.get_with_query("path", &query).await
 //!       }
 //!   }
@@ -145,13 +145,13 @@
 //! JSON should match the doc's example response body byte-for-byte
 //! where possible — see the doc-driven audit lessons in `CLAUDE.md`.
 //!
-//! [`Cloudburst`]: crate::Cloudburst
-//! [`Cloudburst::query`]: crate::Cloudburst::query
-//! [`Cloudburst::versions`]: crate::Cloudburst::versions
-//! [`Cloudburst::search`]: crate::Cloudburst::search
-//! [`Cloudburst::sobject`]: crate::Cloudburst::sobject
-//! [`Cloudburst::bulk`]: crate::Cloudburst::bulk
-//! [`Cloudburst::composite`]: crate::Cloudburst::composite
+//! [`Cirrus`]: crate::Cirrus
+//! [`Cirrus::query`]: crate::Cirrus::query
+//! [`Cirrus::versions`]: crate::Cirrus::versions
+//! [`Cirrus::search`]: crate::Cirrus::search
+//! [`Cirrus::sobject`]: crate::Cirrus::sobject
+//! [`Cirrus::bulk`]: crate::Cirrus::bulk
+//! [`Cirrus::composite`]: crate::Cirrus::composite
 //! [`SObjectHandler`]: crate::handlers::sobjects::SObjectHandler
 //! [`BulkHandler`]: crate::handlers::bulk::BulkHandler
 //! [`CompositeHandler`]: crate::handlers::composite::CompositeHandler

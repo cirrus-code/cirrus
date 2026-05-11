@@ -24,7 +24,7 @@
 //!
 //! [`Retry-After`]: https://datatracker.ietf.org/doc/html/rfc7231#section-7.1.3
 
-use crate::error::CloudburstError;
+use crate::error::CirrusError;
 use std::time::Duration;
 
 /// Configuration for retry-on-transient-failure behavior.
@@ -36,18 +36,18 @@ use std::time::Duration;
 /// # Example
 ///
 /// ```no_run
-/// use cloudburst_sdk::{Cloudburst, RetryPolicy, auth::StaticTokenAuth};
+/// use cirrus::{Cirrus, RetryPolicy, auth::StaticTokenAuth};
 /// use std::sync::Arc;
 /// use std::time::Duration;
 ///
-/// # fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+/// # fn example() -> Result<(), cirrus::CirrusError> {
 /// let policy = RetryPolicy {
 ///     max_retries: 5,
 ///     base_delay: Duration::from_millis(250),
 ///     ..RetryPolicy::default()
 /// };
 /// let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
-/// let sf = Cloudburst::builder()
+/// let sf = Cirrus::builder()
 ///     .auth(auth)
 ///     .retry_policy(policy)
 ///     .build()?;
@@ -141,7 +141,7 @@ pub(crate) fn should_retry_status(
 pub(crate) fn should_retry_network(
     policy: &RetryPolicy,
     method: &reqwest::Method,
-    error: &CloudburstError,
+    error: &CirrusError,
     attempt: u32,
 ) -> bool {
     if attempt >= policy.max_retries {
@@ -150,7 +150,7 @@ pub(crate) fn should_retry_network(
     if !is_idempotent(method) {
         return false;
     }
-    matches!(error, CloudburstError::Http(_))
+    matches!(error, CirrusError::Http(_))
 }
 
 fn is_idempotent(method: &reqwest::Method) -> bool {
@@ -195,7 +195,7 @@ pub(crate) fn compute_delay(
     if let Some(hint) = retry_after {
         let capped = hint.min(policy.max_delay);
         tracing::warn!(
-            target: "cloudburst::retry",
+            target: "cirrus::retry",
             attempt = attempt + 1,
             delay_ms = capped.as_millis() as u64,
             source = "retry-after-header",
@@ -229,7 +229,7 @@ pub(crate) fn compute_delay(
         }
     };
     tracing::warn!(
-        target: "cloudburst::retry",
+        target: "cirrus::retry",
         attempt = attempt + 1,
         delay_ms = final_delay.as_millis() as u64,
         source = "exponential-backoff",

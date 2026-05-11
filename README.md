@@ -1,10 +1,10 @@
-# cloudburst-sdk
+# cirrus
 
 An ergonomic Rust HTTP client for the Salesforce REST API.
 
 > This project is in no way affiliated with Salesforce.
 
-`cloudburst-sdk` is a strongly-typed, async-first client built on `reqwest` and
+`cirrus` is a strongly-typed, async-first client built on `reqwest` and
 `tokio`. It covers the everyday surface of the Salesforce REST API — CRUD,
 SOQL/SOSL, Bulk 2.0, composite, Tooling, Apex REST, Event Monitoring — plus a
 small set of cross-cutting niceties (retry/backoff, auto-refresh on 401, a
@@ -23,13 +23,13 @@ Edition org via an integration test suite (`tests/integration/`).
 
 ```toml
 [dependencies]
-cloudburst-sdk = { git = "https://github.com/rfaulhaber/cloudburst-sdk" }
+cirrus = { git = "https://github.com/rfaulhaber/cirrus" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
 ```rust,no_run
-use cloudburst_sdk::auth::StaticTokenAuth;
-use cloudburst_sdk::Cloudburst;
+use cirrus::auth::StaticTokenAuth;
+use cirrus::Cirrus;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("SF_ACCESS_TOKEN")?,
         std::env::var("SF_INSTANCE_URL")?,
     ));
-    let sf = Cloudburst::builder().auth(auth).build()?;
+    let sf = Cirrus::builder().auth(auth).build()?;
 
     // SOQL
     let result = sf.query("SELECT Id, Name FROM Account LIMIT 5").await?;
@@ -107,8 +107,8 @@ clobbering a token a concurrent task just refreshed.
   the consumer surface. Drop the stream → no further fetches.
 - **Conditional requests** — `describe_*_if_modified_since(SystemTime)` returns
   `Option<T>`; `None` on 304 Not Modified.
-- **Structured `tracing` events** — `cloudburst::retry`, `cloudburst::auth`,
-  `cloudburst::limit_info` targets. Never logs tokens or bodies.
+- **Structured `tracing` events** — `cirrus::retry`, `cirrus::auth`,
+  `cirrus::limit_info` targets. Never logs tokens or bodies.
 
 ### Design: the escape hatch
 

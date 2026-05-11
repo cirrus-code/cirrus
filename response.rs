@@ -14,7 +14,7 @@
 //! on success. Callers never need to model error shapes in their response
 //! types.
 
-use crate::error::{CloudburstError, CloudburstResult, SalesforceError};
+use crate::error::{CirrusError, CirrusResult, SalesforceError};
 use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use serde::Serialize;
@@ -110,7 +110,7 @@ pub type OrgLimits = HashMap<String, Limit>;
 /// ```
 ///
 /// Populated automatically on every successful round-trip; the most
-/// recent value is reachable via [`crate::Cloudburst::last_limit_info`].
+/// recent value is reachable via [`crate::Cirrus::last_limit_info`].
 /// Same surfacing pattern jsforce uses for `Connection.limitInfo`.
 ///
 /// The percentages-used / `Sforce-Limit-Info` header is documented
@@ -768,38 +768,38 @@ pub struct ExecuteAnonymousResult {
 /// On 2xx, the body is deserialized into `R` (use `serde_json::Value` for an
 /// untyped response). On 4xx/5xx, the body is parsed as a Salesforce error
 /// array; if that fails the raw body is preserved in
-/// [`CloudburstError::Api::raw`] for debugging.
+/// [`CirrusError::Api::raw`] for debugging.
 pub(crate) fn parse_response_bytes<R: DeserializeOwned>(
     status: u16,
     bytes: &[u8],
-) -> CloudburstResult<R> {
+) -> CirrusResult<R> {
     if (200..300).contains(&status) {
         if bytes.is_empty() {
             // Some endpoints return 204 No Content. Try to deserialize an empty
             // JSON null — works for `()` and for `Option<T>`. Anything else
             // produces a serialization error that surfaces the mismatch.
-            return serde_json::from_slice(b"null").map_err(CloudburstError::Serialization);
+            return serde_json::from_slice(b"null").map_err(CirrusError::Serialization);
         }
-        return serde_json::from_slice(bytes).map_err(CloudburstError::Serialization);
+        return serde_json::from_slice(bytes).map_err(CirrusError::Serialization);
     }
     Err(parse_error_response(status, bytes))
 }
 
-/// Parses a non-2xx response body into a [`CloudburstError::Api`].
+/// Parses a non-2xx response body into a [`CirrusError::Api`].
 ///
 /// Tries the standard Salesforce error-array shape first; falls back to
 /// preserving the raw body for debugging when the array doesn't parse.
 /// Used both by [`parse_response_bytes`] (JSON success path) and the
 /// raw-body transport path that bypasses JSON deserialization on success
 /// (Bulk API CSV downloads).
-pub(crate) fn parse_error_response(status: u16, bytes: &[u8]) -> CloudburstError {
+pub(crate) fn parse_error_response(status: u16, bytes: &[u8]) -> CirrusError {
     let errors = serde_json::from_slice::<Vec<SalesforceError>>(bytes).unwrap_or_default();
     let raw = if errors.is_empty() {
         Some(String::from_utf8_lossy(bytes).into_owned())
     } else {
         None
     };
-    CloudburstError::Api {
+    CirrusError::Api {
         status,
         errors,
         raw,
@@ -860,7 +860,7 @@ mod tests {
         let body = r#"[{"message":"No such column","errorCode":"INVALID_FIELD","fields":["Foo"]}]"#;
         let err = parse_response_bytes::<Value>(400, body.as_bytes()).unwrap_err();
         match err {
-            CloudburstError::Api {
+            CirrusError::Api {
                 status,
                 errors,
                 raw,
@@ -879,7 +879,7 @@ mod tests {
         let body = "<html>Internal Server Error</html>";
         let err = parse_response_bytes::<Value>(500, body.as_bytes()).unwrap_err();
         match err {
-            CloudburstError::Api {
+            CirrusError::Api {
                 status,
                 errors,
                 raw,

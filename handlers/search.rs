@@ -13,17 +13,17 @@
 //! Both endpoints share the same response envelope ([`SearchResult`]) and
 //! both expose `_as::<T>()` typed variants.
 //!
-//! [`search`]: Cloudburst::search
-//! [`parameterized_search`]: Cloudburst::parameterized_search
+//! [`search`]: Cirrus::search
+//! [`parameterized_search`]: Cirrus::parameterized_search
 
-use crate::Cloudburst;
-use crate::error::CloudburstResult;
+use crate::Cirrus;
+use crate::error::CirrusResult;
 use crate::response::SearchResult;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-impl Cloudburst {
+impl Cirrus {
     /// Runs a SOSL search.
     ///
     /// Calls `GET /services/data/{api_version}/search?q={sosl}`. The SOSL
@@ -31,7 +31,7 @@ impl Cloudburst {
     ///
     /// SOSL example:
     /// `FIND {Acme} IN NAME FIELDS RETURNING Account(Id, Name), Contact(Id)`.
-    pub async fn search(&self, sosl: &str) -> CloudburstResult<SearchResult<Value>> {
+    pub async fn search(&self, sosl: &str) -> CirrusResult<SearchResult<Value>> {
         self.search_as(sosl).await
     }
 
@@ -39,7 +39,7 @@ impl Cloudburst {
     pub async fn search_as<R: DeserializeOwned>(
         &self,
         sosl: &str,
-    ) -> CloudburstResult<SearchResult<R>> {
+    ) -> CirrusResult<SearchResult<R>> {
         let query = [("q", sosl)];
         self.get_with_query("search", &query).await
     }
@@ -61,7 +61,7 @@ impl Cloudburst {
     /// The POST form is strictly more capable than the GET form (which
     /// this SDK does not wrap). Use the open-ended client escape hatch
     /// for the GET form if you need it.
-    pub async fn parameterized_search<B>(&self, body: &B) -> CloudburstResult<SearchResult<Value>>
+    pub async fn parameterized_search<B>(&self, body: &B) -> CirrusResult<SearchResult<Value>>
     where
         B: Serialize + ?Sized,
     {
@@ -70,7 +70,7 @@ impl Cloudburst {
 
     /// Typed variant of
     /// [`parameterized_search`](Self::parameterized_search).
-    pub async fn parameterized_search_as<R, B>(&self, body: &B) -> CloudburstResult<SearchResult<R>>
+    pub async fn parameterized_search_as<R, B>(&self, body: &B) -> CirrusResult<SearchResult<R>>
     where
         R: DeserializeOwned,
         B: Serialize + ?Sized,
@@ -82,16 +82,16 @@ impl Cloudburst {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use crate::Cloudburst;
+    use crate::Cirrus;
     use crate::auth::StaticTokenAuth;
     use serde_json::json;
     use std::sync::Arc;
     use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn fixture(uri: String) -> Cloudburst {
+    fn fixture(uri: String) -> Cirrus {
         let auth = Arc::new(StaticTokenAuth::new("tok", uri));
-        Cloudburst::builder().auth(auth).build().unwrap()
+        Cirrus::builder().auth(auth).build().unwrap()
     }
 
     #[tokio::test]
@@ -194,7 +194,7 @@ mod tests {
         let sf = fixture(server.uri());
         let err = sf.search("FIND foo").await.unwrap_err();
         match err {
-            crate::CloudburstError::Api { status, errors, .. } => {
+            crate::CirrusError::Api { status, errors, .. } => {
                 assert_eq!(status, 400);
                 assert_eq!(errors[0].error_code, "MALFORMED_SEARCH");
             }
@@ -320,7 +320,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            crate::CloudburstError::Api { status, errors, .. } => {
+            crate::CirrusError::Api { status, errors, .. } => {
                 assert_eq!(status, 400);
                 assert_eq!(errors[0].error_code, "INVALID_SEARCH_SCOPE");
             }

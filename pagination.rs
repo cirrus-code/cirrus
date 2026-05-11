@@ -67,8 +67,8 @@
 //! [`QueryResult<R>`]: crate::QueryResult
 //! [`reqwest`]: reqwest
 
-use crate::Cloudburst;
-use crate::error::CloudburstResult;
+use crate::Cirrus;
+use crate::error::CirrusResult;
 use crate::response::QueryResult;
 use futures::future::BoxFuture;
 use futures::stream::Stream;
@@ -78,24 +78,24 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 /// Future producing a single page of query records.
-type PageFuture<R> = BoxFuture<'static, CloudburstResult<QueryResult<R>>>;
+type PageFuture<R> = BoxFuture<'static, CirrusResult<QueryResult<R>>>;
 
 /// A lazy stream of query records that walks `nextRecordsUrl` locators
 /// transparently.
 ///
-/// Yields [`CloudburstResult<R>`] — the first error from any page fetch
+/// Yields [`CirrusResult<R>`] — the first error from any page fetch
 /// terminates the stream after surfacing it once. Construct via
-/// [`Cloudburst::query_stream`] / [`Cloudburst::query_stream_as`] /
-/// [`Cloudburst::query_all_stream`] / [`Cloudburst::query_all_stream_as`]
+/// [`Cirrus::query_stream`] / [`Cirrus::query_stream_as`] /
+/// [`Cirrus::query_all_stream`] / [`Cirrus::query_all_stream_as`]
 /// or the equivalent methods on
 /// [`crate::handlers::tooling::ToolingHandler`].
 ///
-/// [`Cloudburst::query_stream`]: crate::Cloudburst::query_stream
-/// [`Cloudburst::query_stream_as`]: crate::Cloudburst::query_stream_as
-/// [`Cloudburst::query_all_stream`]: crate::Cloudburst::query_all_stream
-/// [`Cloudburst::query_all_stream_as`]: crate::Cloudburst::query_all_stream_as
+/// [`Cirrus::query_stream`]: crate::Cirrus::query_stream
+/// [`Cirrus::query_stream_as`]: crate::Cirrus::query_stream_as
+/// [`Cirrus::query_all_stream`]: crate::Cirrus::query_all_stream
+/// [`Cirrus::query_all_stream_as`]: crate::Cirrus::query_all_stream_as
 pub struct Records<R> {
-    client: Cloudburst,
+    client: Cirrus,
     state: State<R>,
 }
 
@@ -142,7 +142,7 @@ impl<R: DeserializeOwned + Send + Unpin + 'static> Records<R> {
     /// future (a `query_as`, `query_all_as`, or
     /// `tooling().query_as` call, all of which return
     /// `QueryResult<R>`).
-    pub(crate) fn new(client: Cloudburst, initial: PageFuture<R>) -> Self {
+    pub(crate) fn new(client: Cirrus, initial: PageFuture<R>) -> Self {
         Self {
             client,
             state: State::Fetching(initial),
@@ -151,10 +151,10 @@ impl<R: DeserializeOwned + Send + Unpin + 'static> Records<R> {
 }
 
 impl<R: DeserializeOwned + Send + Unpin + 'static> Stream for Records<R> {
-    type Item = CloudburstResult<R>;
+    type Item = CirrusResult<R>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // Records<R> contains only owned, Unpin fields (Cloudburst is
+        // Records<R> contains only owned, Unpin fields (Cirrus is
         // Clone+Send+Sync; State<R> wraps Unpin variants — the
         // BoxFuture is `Pin<Box<...>>` which is itself Unpin). So
         // get_mut() is sound without structural pinning.
@@ -206,7 +206,7 @@ impl<R: DeserializeOwned + Send + Unpin + 'static> Stream for Records<R> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use crate::Cloudburst;
+    use crate::Cirrus;
     use crate::auth::StaticTokenAuth;
     use futures::StreamExt;
     use serde_json::{Value, json};
@@ -215,12 +215,12 @@ mod tests {
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
-    fn fixture(uri: String) -> Cloudburst {
+    fn fixture(uri: String) -> Cirrus {
         // Disable retries so error-path tests can assert exact call
         // counts. Retry behavior gets its own dedicated tests in
         // retry.rs / lib.rs.
         let auth = Arc::new(StaticTokenAuth::new("tok", uri));
-        Cloudburst::builder()
+        Cirrus::builder()
             .auth(auth)
             .retry_policy(crate::RetryPolicy::none())
             .build()
@@ -367,10 +367,7 @@ mod tests {
 
         // Page 2 error
         let err = stream.next().await.unwrap().unwrap_err();
-        assert!(matches!(
-            err,
-            crate::CloudburstError::Api { status: 503, .. }
-        ));
+        assert!(matches!(err, crate::CirrusError::Api { status: 503, .. }));
 
         // Stream terminates — no further fetches.
         assert!(stream.next().await.is_none());

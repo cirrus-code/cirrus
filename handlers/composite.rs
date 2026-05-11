@@ -17,16 +17,16 @@
 //! # Sub-request URL shape
 //!
 //! Sub-request URLs are *not* instance-rooted and they do *not* go through
-//! [`Cloudburst::resolve_url`]. Salesforce dispatches them under the
+//! [`Cirrus::resolve_url`]. Salesforce dispatches them under the
 //! configured `/services/data/` tree, so the expected form is
 //! `vXX.X/sobjects/Account/001…` — the API version prefix is mandatory.
 //! Each sub-request can target a different version, subject to the rule
 //! `v34.0 ≤ subrequest_version ≤ batch_version`.
 //!
-//! [`Cloudburst::resolve_url`]: crate::Cloudburst
+//! [`Cirrus::resolve_url`]: crate::Cirrus
 
-use crate::Cloudburst;
-use crate::error::CloudburstResult;
+use crate::Cirrus;
+use crate::error::CirrusResult;
 use crate::response::{
     BatchResponse, CompositeResponse, CompositeTreeResponse, SObjectCollectionResult,
 };
@@ -35,18 +35,18 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-impl Cloudburst {
+impl Cirrus {
     /// Returns a handler for the composite REST resources.
     ///
     /// # Example
     ///
     /// ```no_run
-    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use cirrus::{Cirrus, auth::StaticTokenAuth};
     /// # use std::sync::Arc;
     /// use serde_json::json;
-    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # async fn example() -> Result<(), cirrus::CirrusError> {
     /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
-    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// # let sf = Cirrus::builder().auth(auth).build()?;
     /// // Bulk-create three Accounts in one round trip.
     /// let results = sf.composite().sobjects().create(&json!({
     ///     "allOrNone": false,
@@ -69,10 +69,10 @@ impl Cloudburst {
 
 /// Handler for `/services/data/{version}/composite/...` resources.
 ///
-/// Returned by [`Cloudburst::composite`].
+/// Returned by [`Cirrus::composite`].
 #[derive(Debug)]
 pub struct CompositeHandler<'a> {
-    client: &'a Cloudburst,
+    client: &'a Cirrus,
 }
 
 impl CompositeHandler<'_> {
@@ -92,7 +92,7 @@ impl CompositeHandler<'_> {
     /// for the remaining sub-requests).
     ///
     /// ```ignore
-    /// use cloudburst_sdk::{BatchRequest, BatchSubrequest};
+    /// use cirrus::{BatchRequest, BatchSubrequest};
     /// use serde_json::json;
     ///
     /// let req = BatchRequest {
@@ -119,7 +119,7 @@ impl CompositeHandler<'_> {
     ///     }
     /// }
     /// ```
-    pub async fn batch<B>(&self, body: &B) -> CloudburstResult<BatchResponse>
+    pub async fn batch<B>(&self, body: &B) -> CirrusResult<BatchResponse>
     where
         B: Serialize + ?Sized,
     {
@@ -163,7 +163,7 @@ impl CompositeHandler<'_> {
     /// request rolls back and [`CompositeTreeResponse::has_errors`] is
     /// `true`. The `results` collection in that case lists only the
     /// failing records' `referenceId`s — *no* records were committed.
-    pub async fn tree<B>(&self, sobject: &str, body: &B) -> CloudburstResult<CompositeTreeResponse>
+    pub async fn tree<B>(&self, sobject: &str, body: &B) -> CirrusResult<CompositeTreeResponse>
     where
         B: Serialize + ?Sized,
     {
@@ -206,7 +206,7 @@ impl CompositeHandler<'_> {
     /// `Id` — `@{ref.id}` and `@{ref.Id}` reach different fields.
     ///
     /// ```ignore
-    /// use cloudburst_sdk::{CompositeRequest, CompositeSubrequest};
+    /// use cirrus::{CompositeRequest, CompositeSubrequest};
     /// use serde_json::json;
     ///
     /// let req = CompositeRequest {
@@ -238,10 +238,10 @@ impl CompositeHandler<'_> {
     /// }
     /// ```
     ///
-    /// Note: `Cloudburst::execute` (the open-ended escape hatch) and
+    /// Note: `Cirrus::execute` (the open-ended escape hatch) and
     /// `CompositeHandler::execute` (this method) are unrelated despite
     /// sharing a name — distinguished by their receivers and signatures.
-    pub async fn execute<B>(&self, body: &B) -> CloudburstResult<CompositeResponse>
+    pub async fn execute<B>(&self, body: &B) -> CirrusResult<CompositeResponse>
     where
         B: Serialize + ?Sized,
     {
@@ -327,7 +327,7 @@ pub struct CompositeSubrequest {
 /// delete) to enable transactional semantics.
 #[derive(Debug)]
 pub struct CompositeSObjectsHandler<'a> {
-    client: &'a Cloudburst,
+    client: &'a Cirrus,
 }
 
 impl CompositeSObjectsHandler<'_> {
@@ -355,7 +355,7 @@ impl CompositeSObjectsHandler<'_> {
     ///     }
     /// }
     /// ```
-    pub async fn create<B>(&self, body: &B) -> CloudburstResult<Vec<SObjectCollectionResult>>
+    pub async fn create<B>(&self, body: &B) -> CirrusResult<Vec<SObjectCollectionResult>>
     where
         B: Serialize + ?Sized,
     {
@@ -367,7 +367,7 @@ impl CompositeSObjectsHandler<'_> {
     /// Each record in the body must include its `id` alongside the
     /// `attributes.type` and the fields to update. Same envelope as
     /// [`create`](Self::create).
-    pub async fn update<B>(&self, body: &B) -> CloudburstResult<Vec<SObjectCollectionResult>>
+    pub async fn update<B>(&self, body: &B) -> CirrusResult<Vec<SObjectCollectionResult>>
     where
         B: Serialize + ?Sized,
     {
@@ -386,7 +386,7 @@ impl CompositeSObjectsHandler<'_> {
         sobject: &str,
         external_id_field: &str,
         body: &B,
-    ) -> CloudburstResult<Vec<SObjectCollectionResult>>
+    ) -> CirrusResult<Vec<SObjectCollectionResult>>
     where
         B: Serialize + ?Sized,
     {
@@ -411,7 +411,7 @@ impl CompositeSObjectsHandler<'_> {
         &self,
         ids: &[&str],
         all_or_none: bool,
-    ) -> CloudburstResult<Vec<SObjectCollectionResult>> {
+    ) -> CirrusResult<Vec<SObjectCollectionResult>> {
         let joined = ids.join(",");
         let all = if all_or_none { "true" } else { "false" };
         let url = self.client.resolve_url("composite/sobjects");
@@ -436,7 +436,7 @@ impl CompositeSObjectsHandler<'_> {
         sobject: &str,
         ids: &[&str],
         fields: &[&str],
-    ) -> CloudburstResult<Vec<Value>> {
+    ) -> CirrusResult<Vec<Value>> {
         self.retrieve_as(sobject, ids, fields).await
     }
 
@@ -449,7 +449,7 @@ impl CompositeSObjectsHandler<'_> {
         sobject: &str,
         ids: &[&str],
         fields: &[&str],
-    ) -> CloudburstResult<Vec<R>> {
+    ) -> CirrusResult<Vec<R>> {
         let url = self
             .client
             .versioned_segments(&["composite", "sobjects", sobject])?;
@@ -491,7 +491,7 @@ impl CompositeSObjectsHandler<'_> {
         sobject: &str,
         ids: &[&str],
         fields: &[&str],
-    ) -> CloudburstResult<Vec<Value>> {
+    ) -> CirrusResult<Vec<Value>> {
         self.retrieve_with_body_as(sobject, ids, fields).await
     }
 
@@ -501,7 +501,7 @@ impl CompositeSObjectsHandler<'_> {
         sobject: &str,
         ids: &[&str],
         fields: &[&str],
-    ) -> CloudburstResult<Vec<R>> {
+    ) -> CirrusResult<Vec<R>> {
         let url = self
             .client
             .versioned_segments(&["composite", "sobjects", sobject])?;
@@ -562,16 +562,16 @@ pub struct BatchSubrequest {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::Cloudburst;
+    use crate::Cirrus;
     use crate::auth::StaticTokenAuth;
     use serde_json::json;
     use std::sync::Arc;
     use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn fixture(uri: String) -> Cloudburst {
+    fn fixture(uri: String) -> Cirrus {
         let auth = Arc::new(StaticTokenAuth::new("tok", uri));
-        Cloudburst::builder().auth(auth).build().unwrap()
+        Cirrus::builder().auth(auth).build().unwrap()
     }
 
     #[tokio::test]
@@ -904,7 +904,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            crate::CloudburstError::Api { status, errors, .. } => {
+            crate::CirrusError::Api { status, errors, .. } => {
                 assert_eq!(status, 400);
                 assert_eq!(errors[0].error_code, "INVALID_REQUEST");
             }
@@ -936,7 +936,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            crate::CloudburstError::Api { status, errors, .. } => {
+            crate::CirrusError::Api { status, errors, .. } => {
                 assert_eq!(status, 400);
                 assert_eq!(errors[0].error_code, "JSON_PARSER_ERROR");
             }
@@ -1146,7 +1146,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            crate::CloudburstError::Api { status, errors, .. } => {
+            crate::CirrusError::Api { status, errors, .. } => {
                 assert_eq!(status, 400);
                 assert_eq!(errors[0].error_code, "INVALID_INPUT");
             }

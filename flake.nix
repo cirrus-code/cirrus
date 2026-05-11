@@ -1,5 +1,5 @@
 {
-  description = "cloudburst SDK";
+  description = "cirrus";
 
   inputs = {
     flake-parts.url = "github:hercules-ci/flake-parts";
@@ -15,7 +15,7 @@
     flake-parts,
     ...
   }: let
-    projectName = "cloudburst-sdk";
+    projectName = "cirrus";
   in
     flake-parts.lib.mkFlake {inherit inputs;} {
       imports = [];

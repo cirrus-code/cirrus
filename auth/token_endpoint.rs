@@ -9,7 +9,7 @@
 //! [`crate::auth::jwt`], [`crate::auth::refresh`], etc. constructs the form
 //! body; [`exchange`] handles the rest.
 
-use crate::error::{CloudburstError, CloudburstResult};
+use crate::error::{CirrusError, CirrusResult};
 use serde::{Deserialize, Serialize};
 
 /// Successful token-endpoint response.
@@ -80,12 +80,12 @@ struct OAuthErrorResponse {
 /// The caller assembles the form body with the flow-specific fields
 /// (`grant_type`, `assertion`, `refresh_token`, etc.). On non-2xx, the body
 /// is parsed as the OAuth error shape if possible; otherwise the raw body
-/// is folded into a generic [`CloudburstError::Auth`] message.
+/// is folded into a generic [`CirrusError::Auth`] message.
 pub(super) async fn exchange<B>(
     http: &reqwest::Client,
     login_url: &str,
     body: &B,
-) -> CloudburstResult<TokenResponse>
+) -> CirrusResult<TokenResponse>
 where
     B: Serialize + ?Sized,
 {
@@ -96,29 +96,29 @@ where
 
     if !(200..300).contains(&status) {
         if let Ok(oauth_err) = serde_json::from_slice::<OAuthErrorResponse>(&bytes) {
-            return Err(CloudburstError::OAuth {
+            return Err(CirrusError::OAuth {
                 error: oauth_err.error,
                 error_description: oauth_err.error_description,
             });
         }
-        return Err(CloudburstError::Auth(format!(
+        return Err(CirrusError::Auth(format!(
             "token endpoint returned status {status}: {}",
             String::from_utf8_lossy(&bytes)
         )));
     }
 
     serde_json::from_slice::<TokenResponse>(&bytes)
-        .map_err(|e| CloudburstError::Auth(format!("malformed token response: {e}")))
+        .map_err(|e| CirrusError::Auth(format!("malformed token response: {e}")))
 }
 
 /// Validates that a token response's `instance_url` matches the value the
 /// caller configured. A mismatch usually signals a misconfigured Connected
 /// App (wrong org), which is more actionable when surfaced at auth time
 /// than as a downstream API error.
-pub(super) fn check_instance_url(expected: &str, response: &TokenResponse) -> CloudburstResult<()> {
+pub(super) fn check_instance_url(expected: &str, response: &TokenResponse) -> CirrusResult<()> {
     let returned = response.instance_url.trim_end_matches('/');
     if returned != expected {
-        return Err(CloudburstError::Auth(format!(
+        return Err(CirrusError::Auth(format!(
             "token response instance_url ({returned}) does not match configured instance_url ({expected})"
         )));
     }

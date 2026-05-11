@@ -9,8 +9,8 @@
 //! cargo run --example simple_query
 //! ```
 
-use cloudburst_sdk::Cloudburst;
-use cloudburst_sdk::auth::StaticTokenAuth;
+use cirrus::Cirrus;
+use cirrus::auth::StaticTokenAuth;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let access_token = std::env::var("SF_ACCESS_TOKEN")?;
 
     let auth = Arc::new(StaticTokenAuth::new(access_token, instance_url));
-    let sf = Cloudburst::builder().auth(auth).build()?;
+    let sf = Cirrus::builder().auth(auth).build()?;
 
     let result = sf.query("SELECT Id, Name FROM Account LIMIT 5").await?;
 

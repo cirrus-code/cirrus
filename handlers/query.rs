@@ -24,23 +24,23 @@
 //! [`pagination`](crate::pagination) module docs for the full
 //! contract.
 //!
-//! [`query`]: Cloudburst::query
-//! [`query_all`]: Cloudburst::query_all
-//! [`query_more`]: Cloudburst::query_more
-//! [`query_stream`]: Cloudburst::query_stream
-//! [`query_stream_as`]: Cloudburst::query_stream_as
-//! [`query_all_stream`]: Cloudburst::query_all_stream
-//! [`query_all_stream_as`]: Cloudburst::query_all_stream_as
+//! [`query`]: Cirrus::query
+//! [`query_all`]: Cirrus::query_all
+//! [`query_more`]: Cirrus::query_more
+//! [`query_stream`]: Cirrus::query_stream
+//! [`query_stream_as`]: Cirrus::query_stream_as
+//! [`query_all_stream`]: Cirrus::query_all_stream
+//! [`query_all_stream_as`]: Cirrus::query_all_stream_as
 //! [`futures::Stream`]: futures::stream::Stream
 
-use crate::Cloudburst;
-use crate::error::CloudburstResult;
+use crate::Cirrus;
+use crate::error::CirrusResult;
 use crate::pagination::Records;
 use crate::response::QueryResult;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-impl Cloudburst {
+impl Cirrus {
     /// Runs a SOQL query and returns the first batch of active records.
     ///
     /// Calls `GET /services/data/{api_version}/query?q={soql}`. The query
@@ -49,11 +49,11 @@ impl Cloudburst {
     /// # Example
     ///
     /// ```no_run
-    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use cirrus::{Cirrus, auth::StaticTokenAuth};
     /// # use std::sync::Arc;
-    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # async fn example() -> Result<(), cirrus::CirrusError> {
     /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
-    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// # let sf = Cirrus::builder().auth(auth).build()?;
     /// let result = sf.query("SELECT Id, Name FROM Account LIMIT 10").await?;
     /// for record in &result.records {
     ///     println!("{}", record["Name"]);
@@ -61,15 +61,12 @@ impl Cloudburst {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn query(&self, soql: &str) -> CloudburstResult<QueryResult<Value>> {
+    pub async fn query(&self, soql: &str) -> CirrusResult<QueryResult<Value>> {
         self.query_as(soql).await
     }
 
     /// Typed variant of [`query`](Self::query) — records deserialize as `R`.
-    pub async fn query_as<R: DeserializeOwned>(
-        &self,
-        soql: &str,
-    ) -> CloudburstResult<QueryResult<R>> {
+    pub async fn query_as<R: DeserializeOwned>(&self, soql: &str) -> CirrusResult<QueryResult<R>> {
         let query = [("q", soql)];
         self.get_with_query("query", &query).await
     }
@@ -78,7 +75,7 @@ impl Cloudburst {
     /// archived records. The returned envelope still uses
     /// [`QueryResult`] — soft-deleted rows are surfaced via the
     /// `IsDeleted` field on each record (when included in the SELECT).
-    pub async fn query_all(&self, soql: &str) -> CloudburstResult<QueryResult<Value>> {
+    pub async fn query_all(&self, soql: &str) -> CirrusResult<QueryResult<Value>> {
         self.query_all_as(soql).await
     }
 
@@ -86,7 +83,7 @@ impl Cloudburst {
     pub async fn query_all_as<R: DeserializeOwned>(
         &self,
         soql: &str,
-    ) -> CloudburstResult<QueryResult<R>> {
+    ) -> CirrusResult<QueryResult<R>> {
         let query = [("q", soql)];
         self.get_with_query("queryAll", &query).await
     }
@@ -98,7 +95,7 @@ impl Cloudburst {
     /// The locator is an instance-relative path (e.g.
     /// `/services/data/v60.0/query/01g…-2000`). Pass it through verbatim;
     /// the leading `/` is optional.
-    pub async fn query_more(&self, next_records_url: &str) -> CloudburstResult<QueryResult<Value>> {
+    pub async fn query_more(&self, next_records_url: &str) -> CirrusResult<QueryResult<Value>> {
         self.query_more_as(next_records_url).await
     }
 
@@ -106,7 +103,7 @@ impl Cloudburst {
     pub async fn query_more_as<R: DeserializeOwned>(
         &self,
         next_records_url: &str,
-    ) -> CloudburstResult<QueryResult<R>> {
+    ) -> CirrusResult<QueryResult<R>> {
         // The locator may arrive without a leading '/' (callers
         // assembling fragments). Normalize so resolve_url's three-mode
         // dispatch always treats it as instance-rooted.
@@ -127,12 +124,12 @@ impl Cloudburst {
     /// # Example
     ///
     /// ```no_run
-    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use cirrus::{Cirrus, auth::StaticTokenAuth};
     /// # use std::sync::Arc;
     /// use futures::StreamExt;
-    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # async fn example() -> Result<(), cirrus::CirrusError> {
     /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
-    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// # let sf = Cirrus::builder().auth(auth).build()?;
     /// let mut stream = sf.query_stream("SELECT Id FROM Account");
     /// while let Some(item) = stream.next().await {
     ///     let record = item?;
@@ -178,16 +175,16 @@ impl Cloudburst {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use crate::Cloudburst;
+    use crate::Cirrus;
     use crate::auth::StaticTokenAuth;
     use serde_json::json;
     use std::sync::Arc;
     use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn fixture(uri: String) -> Cloudburst {
+    fn fixture(uri: String) -> Cirrus {
         let auth = Arc::new(StaticTokenAuth::new("tok", uri));
-        Cloudburst::builder().auth(auth).build().unwrap()
+        Cirrus::builder().auth(auth).build().unwrap()
     }
 
     #[tokio::test]
@@ -370,7 +367,7 @@ mod tests {
         let sf = fixture(server.uri());
         let err = sf.query("SELECTT Id FROM Account").await.unwrap_err();
         match err {
-            crate::CloudburstError::Api { status, errors, .. } => {
+            crate::CirrusError::Api { status, errors, .. } => {
                 assert_eq!(status, 400);
                 assert_eq!(errors[0].error_code, "MALFORMED_QUERY");
             }

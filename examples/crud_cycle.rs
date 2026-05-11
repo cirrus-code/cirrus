@@ -10,8 +10,8 @@
 //! cargo run --example crud_cycle
 //! ```
 
-use cloudburst_sdk::Cloudburst;
-use cloudburst_sdk::auth::StaticTokenAuth;
+use cirrus::Cirrus;
+use cirrus::auth::StaticTokenAuth;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -32,13 +32,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("SF_ACCESS_TOKEN")?,
         std::env::var("SF_INSTANCE_URL")?,
     ));
-    let sf = Cloudburst::builder().auth(auth).build()?;
+    let sf = Cirrus::builder().auth(auth).build()?;
     let accounts = sf.sobject("Account");
 
     // Create
     let created = accounts
         .create(&json!({
-            "Name": "cloudburst-sdk example",
+            "Name": "cirrus example",
             "Description": "initial",
         }))
         .await?;

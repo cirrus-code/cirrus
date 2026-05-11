@@ -14,8 +14,8 @@
 //! cargo run --example apex_passthrough
 //! ```
 
-use cloudburst_sdk::Cloudburst;
-use cloudburst_sdk::auth::StaticTokenAuth;
+use cirrus::Cirrus;
+use cirrus::auth::StaticTokenAuth;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("SF_ACCESS_TOKEN")?,
         std::env::var("SF_INSTANCE_URL")?,
     ));
-    let sf = Cloudburst::builder().auth(auth).build()?;
+    let sf = Cirrus::builder().auth(auth).build()?;
 
     // POST /services/apexrest/Hello with a JSON body, expecting a
     // {"greeting": "..."} response. Path normalization accepts both

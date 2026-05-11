@@ -46,7 +46,7 @@
 //! pattern as Web Server PKCE.
 
 use crate::auth::token_endpoint::exchange;
-use crate::error::{CloudburstError, CloudburstResult};
+use crate::error::{CirrusError, CirrusResult};
 
 /// RFC 8693 grant-type URN for the regular token exchange flow.
 pub const GRANT_TYPE_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
@@ -140,7 +140,7 @@ impl TokenExchangeFlow {
     /// specific `subject_token` that may already have been consumed at the
     /// IdP — re-running with the same builder would risk a double-spend
     /// of the IdP's token.
-    pub async fn exchange(self) -> CloudburstResult<TokenExchangeSession> {
+    pub async fn exchange(self) -> CirrusResult<TokenExchangeSession> {
         let scope_joined;
         let mut body: Vec<(&str, &str)> = vec![
             ("grant_type", self.grant_type.as_urn()),
@@ -308,19 +308,19 @@ impl TokenExchangeFlowBuilder {
     }
 
     /// Finalizes the builder.
-    pub fn build(self) -> CloudburstResult<TokenExchangeFlow> {
+    pub fn build(self) -> CirrusResult<TokenExchangeFlow> {
         let consumer_key = self
             .consumer_key
-            .ok_or(CloudburstError::MissingField("consumer_key"))?;
+            .ok_or(CirrusError::MissingField("consumer_key"))?;
         let subject_token = self
             .subject_token
-            .ok_or(CloudburstError::MissingField("subject_token"))?;
+            .ok_or(CirrusError::MissingField("subject_token"))?;
         let subject_token_type = self
             .subject_token_type
-            .ok_or(CloudburstError::MissingField("subject_token_type"))?;
+            .ok_or(CirrusError::MissingField("subject_token_type"))?;
         let mut login_url = self
             .login_url
-            .ok_or(CloudburstError::MissingField("login_url"))?;
+            .ok_or(CirrusError::MissingField("login_url"))?;
         if login_url.ends_with('/') {
             login_url.pop();
         }
@@ -403,7 +403,7 @@ mod tests {
             .subject_token_type(SubjectTokenType::Jwt)
             .build()
             .unwrap_err();
-        assert!(matches!(err, CloudburstError::MissingField("consumer_key")));
+        assert!(matches!(err, CirrusError::MissingField("consumer_key")));
     }
 
     #[test]
@@ -414,7 +414,7 @@ mod tests {
             .subject_token_type(SubjectTokenType::Jwt)
             .build()
             .unwrap_err();
-        assert!(matches!(err, CloudburstError::MissingField("login_url")));
+        assert!(matches!(err, CirrusError::MissingField("login_url")));
     }
 
     #[test]
@@ -425,10 +425,7 @@ mod tests {
             .subject_token_type(SubjectTokenType::Jwt)
             .build()
             .unwrap_err();
-        assert!(matches!(
-            err,
-            CloudburstError::MissingField("subject_token")
-        ));
+        assert!(matches!(err, CirrusError::MissingField("subject_token")));
     }
 
     #[test]
@@ -441,7 +438,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            CloudburstError::MissingField("subject_token_type")
+            CirrusError::MissingField("subject_token_type")
         ));
     }
 
@@ -610,7 +607,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            CloudburstError::OAuth {
+            CirrusError::OAuth {
                 error,
                 error_description,
             } => {

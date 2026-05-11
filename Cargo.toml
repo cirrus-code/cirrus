@@ -1,5 +1,5 @@
 [package]
-name = "cloudburst-sdk"
+name = "cirrus"
 version = "0.1.0"
 edition = "2024"
 description = "An ergonomic Rust HTTP client for the Salesforce REST API."
@@ -8,7 +8,7 @@ authors = ["Ryan Faulhaber <ryf@sent.as>"]
 keywords = ["salesforce", "api", "client", "sdk", "rest"]
 categories = ["api-bindings", "web-programming::http-client"]
 readme = "README.md"
-repository = "https://github.com/rfaulhaber/cloudburst-sdk"
+repository = "https://codeberg.org/ryf/cirrus"
 
 [lib]
 path = "lib.rs"

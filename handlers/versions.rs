@@ -5,24 +5,24 @@
 //! org. It does require auth (a bearer token), but lives outside the
 //! versioned `/services/data/{version}` tree.
 
-use crate::Cloudburst;
-use crate::error::{CloudburstError, CloudburstResult};
+use crate::Cirrus;
+use crate::error::{CirrusError, CirrusResult};
 use crate::response::ApiVersion;
 
-impl Cloudburst {
+impl Cirrus {
     /// Fetches the list of REST API versions this org supports.
     ///
     /// Calls `GET /services/data` (unversioned). Useful for discovering the
-    /// latest available `vNN.N` to use with [`CloudburstBuilder::api_version`].
+    /// latest available `vNN.N` to use with [`CirrusBuilder::api_version`].
     ///
-    /// [`CloudburstBuilder::api_version`]: crate::CloudburstBuilder::api_version
-    pub async fn versions(&self) -> CloudburstResult<Vec<ApiVersion>> {
+    /// [`CirrusBuilder::api_version`]: crate::CirrusBuilder::api_version
+    pub async fn versions(&self) -> CirrusResult<Vec<ApiVersion>> {
         self.get("/services/data").await
     }
 
     /// Fetches the version list and returns the highest available
     /// version as a `vNN.N` string suitable for
-    /// [`CloudburstBuilder::api_version`] (i.e., with the `v` prefix
+    /// [`CirrusBuilder::api_version`] (i.e., with the `v` prefix
     /// the rest of the SDK expects).
     ///
     /// Comparison is numeric — sorted by `(major, minor)`, not
@@ -30,17 +30,15 @@ impl Cloudburst {
     /// (shouldn't happen for a real Salesforce org).
     ///
     /// For one-shot bootstrapping at client-construction time, prefer
-    /// [`CloudburstBuilder::build_with_latest_version`] which combines
+    /// [`CirrusBuilder::build_with_latest_version`] which combines
     /// these two steps.
     ///
-    /// [`CloudburstBuilder::api_version`]: crate::CloudburstBuilder::api_version
-    /// [`CloudburstBuilder::build_with_latest_version`]: crate::CloudburstBuilder::build_with_latest_version
-    pub async fn latest_api_version(&self) -> CloudburstResult<String> {
+    /// [`CirrusBuilder::api_version`]: crate::CirrusBuilder::api_version
+    /// [`CirrusBuilder::build_with_latest_version`]: crate::CirrusBuilder::build_with_latest_version
+    pub async fn latest_api_version(&self) -> CirrusResult<String> {
         let list = self.versions().await?;
         let latest = ApiVersion::latest(&list).ok_or_else(|| {
-            CloudburstError::InvalidResponse(
-                "/services/data returned no parseable API versions".into(),
-            )
+            CirrusError::InvalidResponse("/services/data returned no parseable API versions".into())
         })?;
         Ok(format!("v{}", latest.version))
     }
@@ -49,7 +47,7 @@ impl Cloudburst {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use crate::Cloudburst;
+    use crate::Cirrus;
     use crate::auth::StaticTokenAuth;
     use std::sync::Arc;
     use wiremock::matchers::{header, method, path};
@@ -70,7 +68,7 @@ mod tests {
             .await;
 
         let auth = Arc::new(StaticTokenAuth::new("tok", server.uri()));
-        let sf = Cloudburst::builder().auth(auth).build().unwrap();
+        let sf = Cirrus::builder().auth(auth).build().unwrap();
 
         let versions = sf.versions().await.unwrap();
         assert_eq!(versions.len(), 2);
@@ -91,11 +89,11 @@ mod tests {
             .await;
 
         let auth = Arc::new(StaticTokenAuth::new("tok", server.uri()));
-        let sf = Cloudburst::builder().auth(auth).build().unwrap();
+        let sf = Cirrus::builder().auth(auth).build().unwrap();
 
         let err = sf.versions().await.unwrap_err();
         match err {
-            crate::CloudburstError::Api {
+            crate::CirrusError::Api {
                 status,
                 errors,
                 raw,
@@ -175,7 +173,7 @@ mod tests {
             .await;
 
         let auth = Arc::new(StaticTokenAuth::new("tok", server.uri()));
-        let sf = Cloudburst::builder().auth(auth).build().unwrap();
+        let sf = Cirrus::builder().auth(auth).build().unwrap();
 
         let latest = sf.latest_api_version().await.unwrap();
         assert_eq!(latest, "v66.0");
@@ -195,7 +193,7 @@ mod tests {
             .await;
 
         let auth = Arc::new(StaticTokenAuth::new("tok", server.uri()));
-        let sf = Cloudburst::builder()
+        let sf = Cirrus::builder()
             .auth(auth)
             .build_with_latest_version()
             .await

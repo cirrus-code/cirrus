@@ -10,16 +10,16 @@
 //!
 //! [`Limit::nested`]: crate::Limit::nested
 
-use crate::Cloudburst;
-use crate::error::CloudburstResult;
+use crate::Cirrus;
+use crate::error::CirrusResult;
 use crate::response::OrgLimits;
 
-impl Cloudburst {
+impl Cirrus {
     /// Fetches the org's limits.
     ///
     /// Calls `GET /services/data/{api_version}/limits`. Returns a map keyed
     /// by limit name (e.g. `"DailyApiRequests"`).
-    pub async fn limits(&self) -> CloudburstResult<OrgLimits> {
+    pub async fn limits(&self) -> CirrusResult<OrgLimits> {
         self.get("limits").await
     }
 }
@@ -27,7 +27,7 @@ impl Cloudburst {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use crate::Cloudburst;
+    use crate::Cirrus;
     use crate::auth::StaticTokenAuth;
     use std::sync::Arc;
     use wiremock::matchers::{header, method, path};
@@ -53,7 +53,7 @@ mod tests {
             .await;
 
         let auth = Arc::new(StaticTokenAuth::new("tok", server.uri()));
-        let sf = Cloudburst::builder().auth(auth).build().unwrap();
+        let sf = Cirrus::builder().auth(auth).build().unwrap();
 
         let limits = sf.limits().await.unwrap();
         assert_eq!(limits.len(), 3);
@@ -85,11 +85,11 @@ mod tests {
             .await;
 
         let auth = Arc::new(StaticTokenAuth::new("tok", server.uri()));
-        let sf = Cloudburst::builder().auth(auth).build().unwrap();
+        let sf = Cirrus::builder().auth(auth).build().unwrap();
 
         let err = sf.limits().await.unwrap_err();
         match err {
-            crate::CloudburstError::Api { status, errors, .. } => {
+            crate::CirrusError::Api { status, errors, .. } => {
                 assert_eq!(status, 403);
                 assert_eq!(errors[0].error_code, "INSUFFICIENT_ACCESS");
             }

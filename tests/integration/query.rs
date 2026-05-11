@@ -37,7 +37,7 @@ fn marker(test: &str) -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("cloudburst-sdk-it-{test}-{nanos}")
+    format!("cirrus-it-{test}-{nanos}")
 }
 
 #[tokio::test(flavor = "multi_thread")]

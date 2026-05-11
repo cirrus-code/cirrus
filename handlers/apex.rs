@@ -18,12 +18,12 @@
 //! This handler exists for **discoverability and ergonomics**:
 //!
 //! - Callers who don't know the URL convention can find Apex support via
-//!   [`Cloudburst::apex`].
+//!   [`Cirrus::apex`].
 //! - The `/services/apexrest/` prefix is added automatically — pass just
 //!   the Apex `urlMapping` (e.g. `"MyEndpoint"` or `"/MyEndpoint/123"`).
 //!
 //! Behavior is otherwise identical to the matching method on
-//! [`Cloudburst`]; calls flow through the same auth, retry, and error
+//! [`Cirrus`]; calls flow through the same auth, retry, and error
 //! parsing as any other request.
 //!
 //! # Path encoding
@@ -33,33 +33,33 @@
 //! present) and lets the path through. For paths containing reserved
 //! characters (spaces, `?`, `#`, `&`), pre-encode the segments yourself
 //! before calling. This matches the existing
-//! [`Cloudburst::resolve_url`]'s leading-`/` mode behavior.
+//! [`Cirrus::resolve_url`]'s leading-`/` mode behavior.
 //!
-//! [`Cloudburst::apex`]: crate::Cloudburst::apex
-//! [`Cloudburst::resolve_url`]: crate::Cloudburst
+//! [`Cirrus::apex`]: crate::Cirrus::apex
+//! [`Cirrus::resolve_url`]: crate::Cirrus
 
-use crate::Cloudburst;
-use crate::error::CloudburstResult;
+use crate::Cirrus;
+use crate::error::CirrusResult;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-impl Cloudburst {
+impl Cirrus {
     /// Returns a handler for Apex REST endpoints exposed under
     /// `/services/apexrest/`.
     ///
     /// # Example
     ///
     /// ```no_run
-    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use cirrus::{Cirrus, auth::StaticTokenAuth};
     /// # use std::sync::Arc;
     /// use serde::{Deserialize, Serialize};
     /// #[derive(Serialize)]
     /// struct Request { name: String }
     /// #[derive(Deserialize)]
     /// struct Response { greeting: String }
-    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// # async fn example() -> Result<(), cirrus::CirrusError> {
     /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
-    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// # let sf = Cirrus::builder().auth(auth).build()?;
     /// let req = Request { name: "world".into() };
     /// let resp: Response = sf.apex().post("Hello", &req).await?;
     /// println!("{}", resp.greeting);
@@ -74,24 +74,24 @@ impl Cloudburst {
 /// Handler for `/services/apexrest/{path}` endpoints.
 ///
 /// Each method takes the Apex `urlMapping` (with or without a leading
-/// slash) and forwards through the corresponding [`Cloudburst`] verb.
+/// slash) and forwards through the corresponding [`Cirrus`] verb.
 /// Body and response types are caller-defined since Apex REST endpoints
 /// have no platform-defined wire shape.
 #[derive(Debug)]
 pub struct ApexHandler<'a> {
-    client: &'a Cloudburst,
+    client: &'a Cirrus,
 }
 
 impl ApexHandler<'_> {
     /// `GET /services/apexrest/{path}`.
-    pub async fn get<R: DeserializeOwned>(&self, path: &str) -> CloudburstResult<R> {
+    pub async fn get<R: DeserializeOwned>(&self, path: &str) -> CirrusResult<R> {
         self.client.get(&apex_path(path)).await
     }
 
     /// `GET /services/apexrest/{path}` with a query string. `query` is
     /// any [`Serialize`] value — typically `&[("key", "value")]` or a
     /// struct.
-    pub async fn get_with_query<R, Q>(&self, path: &str, query: &Q) -> CloudburstResult<R>
+    pub async fn get_with_query<R, Q>(&self, path: &str, query: &Q) -> CirrusResult<R>
     where
         R: DeserializeOwned,
         Q: Serialize + ?Sized,
@@ -100,7 +100,7 @@ impl ApexHandler<'_> {
     }
 
     /// `POST /services/apexrest/{path}` with a JSON body.
-    pub async fn post<R, B>(&self, path: &str, body: &B) -> CloudburstResult<R>
+    pub async fn post<R, B>(&self, path: &str, body: &B) -> CirrusResult<R>
     where
         R: DeserializeOwned,
         B: Serialize + ?Sized,
@@ -109,7 +109,7 @@ impl ApexHandler<'_> {
     }
 
     /// `PUT /services/apexrest/{path}` with a JSON body.
-    pub async fn put<R, B>(&self, path: &str, body: &B) -> CloudburstResult<R>
+    pub async fn put<R, B>(&self, path: &str, body: &B) -> CirrusResult<R>
     where
         R: DeserializeOwned,
         B: Serialize + ?Sized,
@@ -118,7 +118,7 @@ impl ApexHandler<'_> {
     }
 
     /// `PATCH /services/apexrest/{path}` with a JSON body.
-    pub async fn patch<R, B>(&self, path: &str, body: &B) -> CloudburstResult<R>
+    pub async fn patch<R, B>(&self, path: &str, body: &B) -> CirrusResult<R>
     where
         R: DeserializeOwned,
         B: Serialize + ?Sized,
@@ -127,7 +127,7 @@ impl ApexHandler<'_> {
     }
 
     /// `DELETE /services/apexrest/{path}`.
-    pub async fn delete<R: DeserializeOwned>(&self, path: &str) -> CloudburstResult<R> {
+    pub async fn delete<R: DeserializeOwned>(&self, path: &str) -> CirrusResult<R> {
         self.client.delete(&apex_path(path)).await
     }
 }
@@ -138,7 +138,7 @@ impl ApexHandler<'_> {
 /// - `"/MyEndpoint"` → `"/services/apexrest/MyEndpoint"`
 /// - `"MyEndpoint/sub/123"` → `"/services/apexrest/MyEndpoint/sub/123"`
 ///
-/// The leading `/` triggers [`Cloudburst::resolve_url`]'s instance-rooted
+/// The leading `/` triggers [`Cirrus::resolve_url`]'s instance-rooted
 /// branch, bypassing the versioned `/services/data/{version}/` prefix.
 fn apex_path(path: &str) -> String {
     format!("/services/apexrest/{}", path.trim_start_matches('/'))
@@ -154,9 +154,9 @@ mod tests {
     use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn fixture(uri: String) -> Cloudburst {
+    fn fixture(uri: String) -> Cirrus {
         let auth = Arc::new(StaticTokenAuth::new("tok", uri));
-        Cloudburst::builder().auth(auth).build().unwrap()
+        Cirrus::builder().auth(auth).build().unwrap()
     }
 
     #[test]
@@ -363,7 +363,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            crate::CloudburstError::Api { status, errors, .. } => {
+            crate::CirrusError::Api { status, errors, .. } => {
                 assert_eq!(status, 404);
                 assert_eq!(errors[0].error_code, "NOT_FOUND");
             }

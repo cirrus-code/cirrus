@@ -3,7 +3,7 @@
 //!
 //! Uses `Account` because it's universally available on every org
 //! edition and has no required custom fields. Each test tags its
-//! records with a unique marker (`cloudburst-sdk-it-{nanos}`) in the
+//! records with a unique marker (`cirrus-it-{nanos}`) in the
 //! `Name` field so:
 //!
 //! - Concurrent test runs don't collide on each other's records.
@@ -19,7 +19,7 @@
 //! (returns 404), so re-runs are idempotent.
 
 use crate::common::try_init_client;
-use cloudburst_sdk::Cloudburst;
+use cirrus::Cirrus;
 use serde::Deserialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,7 +30,7 @@ fn unique_name(test: &str) -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("cloudburst-sdk-it-{test}-{nanos}")
+    format!("cirrus-it-{test}-{nanos}")
 }
 
 /// RAII cleanup guard. On drop, attempts a best-effort delete of the
@@ -38,12 +38,12 @@ fn unique_name(test: &str) -> String {
 /// `block_in_place` is overkill here — we instead spawn into the
 /// current runtime via a blocking send.
 struct AccountCleanup<'a> {
-    sf: &'a Cloudburst,
+    sf: &'a Cirrus,
     id: Option<String>,
 }
 
 impl<'a> AccountCleanup<'a> {
-    fn new(sf: &'a Cloudburst, id: String) -> Self {
+    fn new(sf: &'a Cirrus, id: String) -> Self {
         Self { sf, id: Some(id) }
     }
 

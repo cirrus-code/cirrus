@@ -14,8 +14,8 @@
 //! cargo run --example streaming_pagination
 //! ```
 
-use cloudburst_sdk::Cloudburst;
-use cloudburst_sdk::auth::StaticTokenAuth;
+use cirrus::Cirrus;
+use cirrus::auth::StaticTokenAuth;
 use futures::StreamExt;
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("SF_ACCESS_TOKEN")?,
         std::env::var("SF_INSTANCE_URL")?,
     ));
-    let sf = Cloudburst::builder().auth(auth).build()?;
+    let sf = Cirrus::builder().auth(auth).build()?;
 
     let mut stream = sf.query_stream("SELECT Id, Name FROM Account ORDER BY Name");
 

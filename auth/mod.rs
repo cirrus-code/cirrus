@@ -29,7 +29,7 @@
 //! Anything Salesforce lists as legacy or deprecated is intentionally not
 //! supported.
 
-use crate::error::CloudburstResult;
+use crate::error::CirrusResult;
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -65,7 +65,7 @@ pub use web_server::{CompletedSession, PendingExchange, WebServerFlow, WebServer
 pub trait AuthSession: Send + Sync {
     /// Returns a valid bearer access token. Implementations may refresh
     /// expired tokens transparently here; that is why the method is `async`.
-    async fn access_token(&self) -> CloudburstResult<Cow<'_, str>>;
+    async fn access_token(&self) -> CirrusResult<Cow<'_, str>>;
 
     /// Returns the instance URL for REST requests, e.g.
     /// `https://my-org.my.salesforce.com`. No trailing slash.

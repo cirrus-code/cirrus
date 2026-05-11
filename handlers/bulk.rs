@@ -29,8 +29,8 @@
 //! caller's latency vs. quota trade-offs. Build a polling loop with the
 //! interval that fits the workload.
 
-use crate::Cloudburst;
-use crate::error::CloudburstResult;
+use crate::Cirrus;
+use crate::error::CirrusResult;
 use crate::response::{BulkIngestJob, BulkOperation, BulkQueryJob, BulkQueryResults};
 use serde::Serialize;
 
@@ -39,18 +39,18 @@ const CSV_ACCEPT: &str = "text/csv";
 const SFORCE_LOCATOR: &str = "Sforce-Locator";
 const SFORCE_NUM_RECORDS: &str = "Sforce-NumberOfRecords";
 
-impl Cloudburst {
+impl Cirrus {
     /// Returns a handler for Bulk API 2.0 (`/services/data/{api_version}/jobs/...`).
     ///
     /// # Example
     ///
     /// ```no_run
-    /// # use cloudburst_sdk::{Cloudburst, auth::StaticTokenAuth};
+    /// # use cirrus::{Cirrus, auth::StaticTokenAuth};
     /// # use std::sync::Arc;
-    /// use cloudburst_sdk::{BulkIngestSpec, BulkOperation};
-    /// # async fn example() -> Result<(), cloudburst_sdk::CloudburstError> {
+    /// use cirrus::{BulkIngestSpec, BulkOperation};
+    /// # async fn example() -> Result<(), cirrus::CirrusError> {
     /// # let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.my.salesforce.com"));
-    /// # let sf = Cloudburst::builder().auth(auth).build()?;
+    /// # let sf = Cirrus::builder().auth(auth).build()?;
     /// let bulk = sf.bulk();
     /// let ingest = bulk.ingest();
     /// let spec = BulkIngestSpec {
@@ -62,7 +62,7 @@ impl Cloudburst {
     ///     assignment_rule_id: None,
     /// };
     /// let job = ingest.create(&spec).await?;
-    /// ingest.upload(&job.id, cloudburst_sdk::Bytes::from("Name\nAcme\n")).await?;
+    /// ingest.upload(&job.id, cirrus::Bytes::from("Name\nAcme\n")).await?;
     /// ingest.close(&job.id).await?;
     /// # Ok(())
     /// # }
@@ -72,10 +72,10 @@ impl Cloudburst {
     }
 }
 
-/// Top-level Bulk API 2.0 handler. Returned by [`Cloudburst::bulk`].
+/// Top-level Bulk API 2.0 handler. Returned by [`Cirrus::bulk`].
 #[derive(Debug)]
 pub struct BulkHandler<'a> {
-    client: &'a Cloudburst,
+    client: &'a Cirrus,
 }
 
 impl BulkHandler<'_> {
@@ -118,7 +118,7 @@ impl BulkHandler<'_> {
 /// [`abort`](Self::abort) cancels a job mid-flight if needed.
 #[derive(Debug)]
 pub struct BulkIngestHandler<'a> {
-    client: &'a Cloudburst,
+    client: &'a Cirrus,
 }
 
 impl BulkIngestHandler<'_> {
@@ -126,7 +126,7 @@ impl BulkIngestHandler<'_> {
     /// state with a `content_url` indicating where to upload data.
     ///
     /// Calls `POST /services/data/{api_version}/jobs/ingest`.
-    pub async fn create(&self, spec: &BulkIngestSpec) -> CloudburstResult<BulkIngestJob> {
+    pub async fn create(&self, spec: &BulkIngestSpec) -> CirrusResult<BulkIngestJob> {
         self.client.post("jobs/ingest", spec).await
     }
 
@@ -135,7 +135,7 @@ impl BulkIngestHandler<'_> {
     ///
     /// Calls `PUT /services/data/{api_version}/jobs/ingest/{job_id}/batches`
     /// with `Content-Type: text/csv`.
-    pub async fn upload(&self, job_id: &str, csv: bytes::Bytes) -> CloudburstResult<()> {
+    pub async fn upload(&self, job_id: &str, csv: bytes::Bytes) -> CirrusResult<()> {
         let path = self
             .client
             .versioned_segments(&["jobs", "ingest", job_id, "batches"])?;
@@ -149,7 +149,7 @@ impl BulkIngestHandler<'_> {
     ///
     /// Calls `PATCH /services/data/{api_version}/jobs/ingest/{job_id}`
     /// with `{"state": "UploadComplete"}`.
-    pub async fn close(&self, job_id: &str) -> CloudburstResult<BulkIngestJob> {
+    pub async fn close(&self, job_id: &str) -> CirrusResult<BulkIngestJob> {
         self.patch_state(job_id, "UploadComplete").await
     }
 
@@ -158,14 +158,14 @@ impl BulkIngestHandler<'_> {
     ///
     /// Calls `PATCH /services/data/{api_version}/jobs/ingest/{job_id}`
     /// with `{"state": "Aborted"}`.
-    pub async fn abort(&self, job_id: &str) -> CloudburstResult<BulkIngestJob> {
+    pub async fn abort(&self, job_id: &str) -> CirrusResult<BulkIngestJob> {
         self.patch_state(job_id, "Aborted").await
     }
 
     /// Fetches the current state and metadata for a job.
     ///
     /// Calls `GET /services/data/{api_version}/jobs/ingest/{job_id}`.
-    pub async fn get(&self, job_id: &str) -> CloudburstResult<BulkIngestJob> {
+    pub async fn get(&self, job_id: &str) -> CirrusResult<BulkIngestJob> {
         let path = self
             .client
             .versioned_segments(&["jobs", "ingest", job_id])?;
@@ -178,7 +178,7 @@ impl BulkIngestHandler<'_> {
     /// `Aborted`, or `Failed` state. Returns 204 on success.
     ///
     /// Calls `DELETE /services/data/{api_version}/jobs/ingest/{job_id}`.
-    pub async fn delete(&self, job_id: &str) -> CloudburstResult<()> {
+    pub async fn delete(&self, job_id: &str) -> CirrusResult<()> {
         let path = self
             .client
             .versioned_segments(&["jobs", "ingest", job_id])?;
@@ -194,7 +194,7 @@ impl BulkIngestHandler<'_> {
     ///
     /// Calls
     /// `GET /services/data/{api_version}/jobs/ingest/{job_id}/successfulResults/`.
-    pub async fn successful_results(&self, job_id: &str) -> CloudburstResult<bytes::Bytes> {
+    pub async fn successful_results(&self, job_id: &str) -> CirrusResult<bytes::Bytes> {
         self.fetch_csv_results(job_id, "successfulResults").await
     }
 
@@ -204,7 +204,7 @@ impl BulkIngestHandler<'_> {
     ///
     /// Calls
     /// `GET /services/data/{api_version}/jobs/ingest/{job_id}/failedResults/`.
-    pub async fn failed_results(&self, job_id: &str) -> CloudburstResult<bytes::Bytes> {
+    pub async fn failed_results(&self, job_id: &str) -> CirrusResult<bytes::Bytes> {
         self.fetch_csv_results(job_id, "failedResults").await
     }
 
@@ -213,11 +213,11 @@ impl BulkIngestHandler<'_> {
     ///
     /// Calls
     /// `GET /services/data/{api_version}/jobs/ingest/{job_id}/unprocessedrecords/`.
-    pub async fn unprocessed_records(&self, job_id: &str) -> CloudburstResult<bytes::Bytes> {
+    pub async fn unprocessed_records(&self, job_id: &str) -> CirrusResult<bytes::Bytes> {
         self.fetch_csv_results(job_id, "unprocessedrecords").await
     }
 
-    async fn patch_state(&self, job_id: &str, new_state: &str) -> CloudburstResult<BulkIngestJob> {
+    async fn patch_state(&self, job_id: &str, new_state: &str) -> CirrusResult<BulkIngestJob> {
         let path = self
             .client
             .versioned_segments(&["jobs", "ingest", job_id])?;
@@ -227,7 +227,7 @@ impl BulkIngestHandler<'_> {
             .await
     }
 
-    async fn fetch_csv_results(&self, job_id: &str, kind: &str) -> CloudburstResult<bytes::Bytes> {
+    async fn fetch_csv_results(&self, job_id: &str, kind: &str) -> CirrusResult<bytes::Bytes> {
         let path = self
             .client
             .versioned_segments(&["jobs", "ingest", job_id, kind])?;
@@ -254,21 +254,21 @@ impl BulkIngestHandler<'_> {
 /// 4. [`delete`](Self::delete) when done.
 #[derive(Debug)]
 pub struct BulkQueryHandler<'a> {
-    client: &'a Cloudburst,
+    client: &'a Cirrus,
 }
 
 impl BulkQueryHandler<'_> {
     /// Creates a new query job.
     ///
     /// Calls `POST /services/data/{api_version}/jobs/query`.
-    pub async fn create(&self, spec: &BulkQuerySpec) -> CloudburstResult<BulkQueryJob> {
+    pub async fn create(&self, spec: &BulkQuerySpec) -> CirrusResult<BulkQueryJob> {
         self.client.post("jobs/query", spec).await
     }
 
     /// Fetches the current state and metadata for a query job.
     ///
     /// Calls `GET /services/data/{api_version}/jobs/query/{job_id}`.
-    pub async fn get(&self, job_id: &str) -> CloudburstResult<BulkQueryJob> {
+    pub async fn get(&self, job_id: &str) -> CirrusResult<BulkQueryJob> {
         let path = self.client.versioned_segments(&["jobs", "query", job_id])?;
         self.client
             .send_at::<_, (), ()>(reqwest::Method::GET, &path, None, None)
@@ -279,7 +279,7 @@ impl BulkQueryHandler<'_> {
     ///
     /// Calls `PATCH /services/data/{api_version}/jobs/query/{job_id}`
     /// with `{"state": "Aborted"}`.
-    pub async fn abort(&self, job_id: &str) -> CloudburstResult<BulkQueryJob> {
+    pub async fn abort(&self, job_id: &str) -> CirrusResult<BulkQueryJob> {
         let path = self.client.versioned_segments(&["jobs", "query", job_id])?;
         let body = StatePatch { state: "Aborted" };
         self.client
@@ -303,7 +303,7 @@ impl BulkQueryHandler<'_> {
         job_id: &str,
         locator: Option<&str>,
         max_records: Option<u32>,
-    ) -> CloudburstResult<BulkQueryResults> {
+    ) -> CirrusResult<BulkQueryResults> {
         let path = self
             .client
             .versioned_segments(&["jobs", "query", job_id, "results"])?;
@@ -336,7 +336,7 @@ impl BulkQueryHandler<'_> {
     /// `Aborted`, or `Failed` state.
     ///
     /// Calls `DELETE /services/data/{api_version}/jobs/query/{job_id}`.
-    pub async fn delete(&self, job_id: &str) -> CloudburstResult<()> {
+    pub async fn delete(&self, job_id: &str) -> CirrusResult<()> {
         let path = self.client.versioned_segments(&["jobs", "query", job_id])?;
         self.client
             .send_at::<(), (), ()>(reqwest::Method::DELETE, &path, None, None)
@@ -418,9 +418,9 @@ mod tests {
     use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn fixture(uri: String) -> Cloudburst {
+    fn fixture(uri: String) -> Cirrus {
         let auth = Arc::new(StaticTokenAuth::new("tok", uri));
-        Cloudburst::builder().auth(auth).build().unwrap()
+        Cirrus::builder().auth(auth).build().unwrap()
     }
 
     fn ingest_job_response(id: &str, state: &str) -> serde_json::Value {
@@ -668,7 +668,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            crate::CloudburstError::Api { status, errors, .. } => {
+            crate::CirrusError::Api { status, errors, .. } => {
                 assert_eq!(status, 400);
                 assert_eq!(errors[0].error_code, "INVALIDJOBSTATE");
             }

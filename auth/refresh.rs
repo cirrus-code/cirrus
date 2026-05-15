@@ -1,24 +1,18 @@
 //! OAuth 2.0 Refresh Token grant for long-lived Salesforce sessions.
 //!
-//! Several Salesforce OAuth flows (Web Server, Device, User-Agent) hand
-//! back a `refresh_token` alongside the initial access token. Refresh
-//! tokens are long-lived and can be exchanged for fresh access tokens
-//! indefinitely (until revoked). This module wraps that grant in an
-//! [`AuthSession`] so the rest of the SDK doesn't care which flow
-//! originally produced the refresh token.
+//! Several Salesforce OAuth flows hand back a `refresh_token` alongside
+//! the initial access token. Refresh tokens are long-lived and can be
+//! exchanged for fresh access tokens indefinitely (until revoked). This
+//! module wraps that grant in an [`AuthSession`] so the rest of the SDK
+//! doesn't care which flow originally produced the refresh token.
 //!
-//! ## Composability
+//! ## Usage
 //!
-//! `RefreshTokenAuth` is intentionally a standalone auth implementation
-//! rather than a wrapper over another `AuthSession`. The natural usage is:
-//!
-//! 1. The caller (or a future Web Server / Device flow handler) performs
-//!    the initial OAuth exchange and obtains a `refresh_token` plus an
-//!    `instance_url`.
-//! 2. They build a `RefreshTokenAuth` with those values.
-//! 3. The SDK uses it for all subsequent requests; new access tokens are
-//!    minted on demand by hitting `/services/oauth2/token` with
-//!    `grant_type=refresh_token`.
+//! Perform the initial OAuth exchange to obtain a `refresh_token` and
+//! `instance_url`, build a [`RefreshTokenAuth`] with those values, and
+//! hand it to [`Cirrus`](crate::Cirrus). New access tokens are minted on
+//! demand by hitting `/services/oauth2/token` with
+//! `grant_type=refresh_token`.
 //!
 //! ## Confidential vs public clients
 //!
@@ -29,10 +23,8 @@
 //!
 //! ## Token rotation
 //!
-//! Salesforce does not rotate refresh tokens — the same token is reused
-//! across refreshes. If a future Salesforce change starts returning a new
-//! refresh token in the response, this module currently ignores it; the
-//! original is still used. Add rotation handling if/when that changes.
+//! Refresh tokens are not rotated; the same token is reused across
+//! refreshes.
 
 use crate::auth::AuthSession;
 use crate::auth::token_endpoint::{check_instance_url, exchange};

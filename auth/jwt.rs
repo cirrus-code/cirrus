@@ -5,25 +5,19 @@
 //! key and mints fresh access tokens on demand by signing a short-lived JWT
 //! and exchanging it at the OAuth token endpoint.
 //!
-//! ## Why an explicit `instance_url`
+//! ## `instance_url`
 //!
-//! The token-exchange response includes the org's `instance_url`, but the
-//! [`AuthSession`] trait method that returns it is synchronous — we can't
-//! lazy-fetch it on first use without making the trait async. Salesforce
-//! admins always know their org's My Domain URL up front, so we require it
-//! at builder time. The token response's value is checked against it as a
-//! sanity verification.
+//! `instance_url` is required at builder time and verified against the
+//! value returned in the token response.
 //!
 //! ## Caching
 //!
 //! Each successful token exchange caches the access token for a configurable
-//! TTL (default 30 minutes). The cache uses a [`tokio::sync::RwLock`] so
-//! concurrent callers share the cached token without serializing on the
-//! happy path. Salesforce does not return an explicit expiry in the token
-//! response — the connected app's "session policy" controls actual
-//! expiration — so the TTL is a conservative caller-controlled knob, not a
-//! claim about the token's true lifetime. After the TTL elapses, the next
-//! call mints a new token regardless of whether the previous one would
+//! TTL (default 30 minutes). Salesforce does not return an explicit expiry
+//! in the token response — the connected app's session policy controls
+//! actual expiration — so the TTL is a conservative caller-controlled knob,
+//! not a claim about the token's true lifetime. After the TTL elapses, the
+//! next call mints a new token regardless of whether the previous one would
 //! still have worked.
 
 use crate::auth::AuthSession;

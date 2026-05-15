@@ -18,15 +18,16 @@
 //!   other means.
 //! - [`jwt`] — OAuth 2.0 JWT Bearer flow for server-to-server auth.
 //! - [`refresh`] — OAuth 2.0 Refresh Token grant. Long-lived sessions for
-//!   any flow that produces a refresh token (Web Server, Device, etc.).
+//!   any flow that produces a refresh token.
 //! - [`client_credentials`] — OAuth 2.0 Client Credentials grant for
 //!   server-to-server integrations that run as a pre-configured user.
 //! - [`web_server`] — OAuth 2.0 Web Server flow with PKCE for
 //!   user-interactive authorization. Yields a [`RefreshTokenAuth`] once the
 //!   user comes back through the redirect URL.
+//! - [`token_exchange`] — OAuth 2.0 Token Exchange (RFC 8693), including
+//!   Salesforce's hybrid grant.
 //!
-//! Additional flows (Token Exchange, etc.) will live in sibling modules.
-//! Anything Salesforce lists as legacy or deprecated is intentionally not
+//! Flows Salesforce lists as legacy or deprecated are intentionally not
 //! supported.
 
 use crate::error::CirrusResult;

@@ -2,10 +2,9 @@
 //!
 //! An ergonomic Rust HTTP client for the Salesforce REST API.
 //!
-//! Inspired by [Octocrab](https://github.com/XAMPPRocky/octocrab), Cirrus
-//! provides a type-safe, async interface for interacting with Salesforce
-//! while leaving response shapes entirely up to the caller — no hard-coded
-//! sObject types like `Account` or `Contact`.
+//! Cirrus provides a type-safe, async interface for interacting with
+//! Salesforce while leaving response shapes entirely up to the caller —
+//! no hard-coded sObject types like `Account` or `Contact`.
 //!
 //! ## Design principles
 //!
@@ -87,8 +86,7 @@ pub(crate) const DEFAULT_USER_AGENT: &str = concat!(
 /// The main Salesforce client.
 ///
 /// Holds the underlying HTTP client, an [`AuthSession`] for credentials, and
-/// the API version to use. Cheap to clone — internal state is reference
-/// counted.
+/// the API version to use. Cheap to clone.
 #[derive(Clone)]
 pub struct Cirrus {
     client: reqwest::Client,
@@ -168,8 +166,7 @@ impl Cirrus {
     /// response with the header lands.
     ///
     /// Cloned clients share the same underlying state, so updates
-    /// from one are visible from others. Same surfacing pattern
-    /// jsforce uses for `Connection.limitInfo`.
+    /// from one are visible from others.
     pub fn last_limit_info(&self) -> Option<LimitInfo> {
         self.last_limit_info.read().ok().and_then(|guard| *guard)
     }
@@ -206,8 +203,7 @@ impl Cirrus {
     ///   e.g. `limits` → `{instance}/services/data/{version}/limits`.
     ///
     /// This is the path-resolution contract used by every public verb method
-    /// on [`Cirrus`] and is the load-bearing piece of the open-ended
-    /// client escape hatch.
+    /// on [`Cirrus`].
     pub(crate) fn resolve_url(&self, path: &str) -> String {
         if path.starts_with("http://") || path.starts_with("https://") {
             path.to_string()
@@ -285,9 +281,8 @@ impl Cirrus {
 
     /// PUT a JSON body.
     ///
-    /// Salesforce REST proper rarely uses PUT — it's included for symmetry
-    /// with the rest of the verb set so the escape hatch can address any
-    /// Salesforce surface (Tooling API, Apex REST, etc.) that does.
+    /// Salesforce REST proper rarely uses PUT; provided for surfaces that
+    /// do (Tooling API, Apex REST, etc.).
     pub async fn put<R, B>(&self, path: &str, body: &B) -> CirrusResult<R>
     where
         R: DeserializeOwned,
@@ -955,15 +950,9 @@ impl CirrusBuilder {
     /// the configured `api_version` with the discovered value.
     ///
     /// Useful when you don't want to lock into [`DEFAULT_API_VERSION`]
-    /// at SDK release time — newer Salesforce releases (e.g. Spring
-    /// '26 → v66.0) add fields and endpoints that won't be visible if
-    /// you keep talking to an older version. Costs one extra
+    /// — newer Salesforce releases add fields and endpoints that
+    /// won't be visible against an older version. Costs one extra
     /// `GET /services/data` round-trip on client construction.
-    ///
-    /// The bootstrap call uses [`DEFAULT_API_VERSION`], but
-    /// `/services/data` is *unversioned*, so the choice doesn't
-    /// affect the lookup — it only matters for path resolution which
-    /// is bypassed for this absolute-path call.
     ///
     /// # Example
     ///

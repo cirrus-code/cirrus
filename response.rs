@@ -49,8 +49,8 @@ pub struct QueryResult<R> {
 /// HashMap<String, Value>`).
 ///
 /// `metadata` is populated only when the caller explicitly requests it
-/// (`metadata=LABELS` on the search call). Its shape is flexible enough
-/// across versions that we surface it as raw JSON.
+/// (`metadata=LABELS` on the search call). Surfaced as raw JSON because
+/// its shape varies across versions.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchResult<R> {
     /// Hit records, in Salesforce-defined relevance order.
@@ -111,12 +111,9 @@ pub type OrgLimits = HashMap<String, Limit>;
 ///
 /// Populated automatically on every successful round-trip; the most
 /// recent value is reachable via [`crate::Cirrus::last_limit_info`].
-/// Same surfacing pattern jsforce uses for `Connection.limitInfo`.
 ///
-/// The percentages-used / `Sforce-Limit-Info` header is documented
-/// at [REST API Headers — Sforce-Limit-Info]. We only model the
-/// `api-usage` key here; if Salesforce adds others (per-app usage,
-/// streaming usage), they'll need their own parsers.
+/// Only the `api-usage` key is modelled here. See [REST API Headers —
+/// Sforce-Limit-Info] for the upstream documentation.
 ///
 /// [REST API Headers — Sforce-Limit-Info]: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/headers_limit_info.htm
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,9 +276,7 @@ pub enum BulkColumnDelimiter {
 /// Field availability varies by job state — `number_records_processed`,
 /// `number_records_failed`, and timing fields are populated only after
 /// the job reaches `JobComplete` or `Failed`. `content_url` is populated
-/// only while the job is in `Open` state (it's the URL for uploading
-/// CSV; we use it as a hint, not as the upload target — that's just the
-/// well-known `/batches` path).
+/// only while the job is in `Open` state.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BulkIngestJob {
     pub id: String,
@@ -385,9 +380,8 @@ pub struct BulkQueryJob {
     /// Populated on GET responses only (not CREATE).
     #[serde(rename = "isPkChunkingSupported", default)]
     pub is_pk_chunking_supported: Option<bool>,
-    /// Error message for jobs in `Failed` state. The docs don't list
-    /// this field for healthy query jobs, but it appears on failed
-    /// jobs in practice (mirrors the ingest job shape).
+    /// Error message for jobs in `Failed` state. `None` for healthy
+    /// jobs.
     #[serde(rename = "errorMessage", default)]
     pub error_message: Option<String>,
 }
@@ -722,22 +716,9 @@ pub struct SObjectCollectionResult {
 ///   `exception_message`/`exception_stack_trace` are `Some(...)`. The
 ///   `line`/`column` typically reflect where the exception was thrown.
 ///
-/// `line` and `column` use `-1` as the "no error" sentinel — that's the
-/// SOAP-era convention bleeding through. Callers should branch on
-/// [`success`](Self::success) rather than checking these for `>= 0`.
-///
-/// # Wire-shape provenance
-///
-/// **Verified against a live Developer Edition org** (see
-/// `tests/integration/tooling.rs` — three tests covering clean run,
-/// compile error, and runtime error). Field names
-/// (`compiled`, `compileProblem`, `success`, `line`, `column`,
-/// `exceptionMessage`, `exceptionStackTrace`) and the `-1` no-error
-/// sentinel for `line`/`column` were all confirmed end-to-end. The
-/// JSON wire shape itself remains undocumented in Salesforce's public
-/// REST reference — these fields mirror the SOAP
-/// `ExecuteAnonymousResult` complex type, which the Tooling REST API
-/// serializes via standard camelCase conversion.
+/// `line` and `column` use `-1` as the "no error" sentinel. Callers
+/// should branch on [`success`](Self::success) rather than checking
+/// these for `>= 0`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExecuteAnonymousResult {
     /// `true` if the Apex source compiled. `false` indicates a syntax

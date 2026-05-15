@@ -38,14 +38,13 @@
 //! [`ExecuteAnonymousResult`] indicating whether the code compiled, ran,
 //! and (on failure) where the error occurred.
 //!
-//! **Wire wart:** the Apex source is passed as a URL *query parameter*
-//! (`anonymousBody=...`) on a GET request, not a JSON body on POST. This
-//! puts a practical cap on the size of the supplied source — long Apex
-//! scripts may exceed URL-length limits in proxies, gateways, or logging
-//! infrastructure even when the Salesforce front-end accepts them. For
-//! large jobs, prefer creating an [`ApexClass`] via
-//! [`sobject("ApexClass").create(...)`](ToolingSObjectHandler::create) and
-//! invoking it through a runner, or use the [`MetadataContainer`] /
+//! The Apex source is passed as a URL query parameter (`anonymousBody=...`)
+//! on a GET request, not a JSON body on POST. This caps the practical size
+//! of the supplied source — long Apex scripts may exceed URL-length limits
+//! in proxies, gateways, or logging infrastructure even when the Salesforce
+//! front-end accepts them. For large jobs, prefer creating an [`ApexClass`]
+//! via [`sobject("ApexClass").create(...)`](ToolingSObjectHandler::create)
+//! and invoking it through a runner, or use the [`MetadataContainer`] /
 //! [`ContainerAsyncRequest`] flow.
 //!
 //! [`ApexClass`]: https://developer.salesforce.com/docs/atlas.en-us.api_tooling.meta/api_tooling/tooling_api_objects_apexclass.htm
@@ -65,13 +64,10 @@
 //!   regular [`Cirrus::composite`] handler with
 //!   `tooling/sobjects/...` paths in subrequest URLs, or use the
 //!   open-ended client escape hatch.
-//! - Upsert by external ID. The Tooling API technically permits upsert on
-//!   custom-field-bearing metadata, but the surface is narrow enough that
-//!   we defer until usage warrants a typed wrapper.
-//! - SOAP-bound resources (`runTests`, `runTestsAsync`). Test runs go
-//!   through `/services/data/{version}/tooling/runTestsAsynchronous/`
-//!   and friends — accessible today via the open-ended client escape
-//!   hatch; a typed builder can be added when usage demands it.
+//! - Upsert by external ID on Tooling-API metadata.
+//! - `runTests` / `runTestsAsync`. Test runs go through
+//!   `/services/data/{version}/tooling/runTestsAsynchronous/` and friends,
+//!   reachable via the open-ended client escape hatch.
 
 use crate::Cirrus;
 use crate::error::CirrusResult;

@@ -7,8 +7,7 @@
 //! - [`parameterized_search`] — POSTs a structured JSON body
 //!   (`{"q": "Acme", "fields": ["Id", "Name"], "sobjects": [...]}`) and
 //!   lets Salesforce assemble the SOSL. Strictly more capable than the
-//!   GET form (which we omit — POST handles every case the GET form
-//!   does, including data-category filters and per-object limits).
+//!   GET form (which this SDK does not wrap).
 //!
 //! Both endpoints share the same response envelope ([`SearchResult`]) and
 //! both expose `_as::<T>()` typed variants.

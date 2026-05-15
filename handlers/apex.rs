@@ -7,36 +7,15 @@
 //! transport, auth, and (on non-2xx) the standard `[{message, errorCode}]`
 //! error array.
 //!
-//! # Why a handler instead of just the escape hatch?
-//!
-//! The escape hatch already covers Apex REST today:
-//!
-//! ```ignore
-//! sf.get::<MyResp>("/services/apexrest/MyEndpoint").await?;
-//! ```
-//!
-//! This handler exists for **discoverability and ergonomics**:
-//!
-//! - Callers who don't know the URL convention can find Apex support via
-//!   [`Cirrus::apex`].
-//! - The `/services/apexrest/` prefix is added automatically — pass just
-//!   the Apex `urlMapping` (e.g. `"MyEndpoint"` or `"/MyEndpoint/123"`).
-//!
-//! Behavior is otherwise identical to the matching method on
-//! [`Cirrus`]; calls flow through the same auth, retry, and error
-//! parsing as any other request.
+//! The handler prepends `/services/apexrest/` to the path you supply
+//! (stripping a single leading slash if present). Pass just the Apex
+//! `urlMapping` (e.g. `"MyEndpoint"` or `"/MyEndpoint/123"`).
 //!
 //! # Path encoding
 //!
-//! The handler does **not** percent-encode path segments — it just
-//! prepends `/services/apexrest/` (stripping a single leading slash if
-//! present) and lets the path through. For paths containing reserved
-//! characters (spaces, `?`, `#`, `&`), pre-encode the segments yourself
-//! before calling. This matches the existing
-//! [`Cirrus::resolve_url`]'s leading-`/` mode behavior.
-//!
-//! [`Cirrus::apex`]: crate::Cirrus::apex
-//! [`Cirrus::resolve_url`]: crate::Cirrus
+//! The handler does **not** percent-encode path segments. For paths
+//! containing reserved characters (spaces, `?`, `#`, `&`), pre-encode the
+//! segments yourself before calling.
 
 use crate::Cirrus;
 use crate::error::CirrusResult;

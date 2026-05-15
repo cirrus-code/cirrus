@@ -8,7 +8,7 @@ authors = ["Ryan Faulhaber <ryf@sent.as>"]
 keywords = ["salesforce", "api", "client", "sdk", "rest"]
 categories = ["api-bindings", "web-programming::http-client"]
 readme = "README.md"
-repository = "https://codeberg.org/ryf/cirrus"
+repository = "https://github.com/cirrus-code/cirrus"
 
 [lib]
 path = "lib.rs"
@@ -63,3 +63,6 @@ push-remote = "origin"
 tag-prefix = "v"
 tag-name = "{{prefix}}{{version}}"
 publish = true
+pre-release-replacements = [
+    { file = "README.md", search = "cirrus = \"[^\"]+\"", replace = "cirrus = \"{{version}}\"", min = 1 },
+]

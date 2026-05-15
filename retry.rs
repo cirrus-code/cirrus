@@ -95,9 +95,8 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
-    /// A policy that disables retries. Useful for non-idempotent
-    /// flows you've audited yourself, or for tests that want
-    /// deterministic single-shot semantics.
+    /// A policy that disables retries. Useful for non-idempotent flows
+    /// or for tests that want deterministic single-shot semantics.
     pub fn none() -> Self {
         Self {
             max_retries: 0,

@@ -2,7 +2,7 @@
 
 An ergonomic Rust HTTP client for the Salesforce REST API.
 
-> This project is in no way affiliated with Salesforce.
+This project is in no way affiliated with Salesforce.
 
 `cirrus` is a strongly-typed, async-first client built on `reqwest` and
 `tokio`. It covers the everyday surface of the Salesforce REST API — CRUD,
@@ -12,18 +12,17 @@ streaming pagination iterator, conditional-request helpers, structured
 `tracing` events) that you'd otherwise have to assemble by hand.
 
 It also exposes an [open-ended escape hatch](#design-the-escape-hatch) so any
-endpoint we haven't typed yet is a one-liner away.
-
-## Status
-
-Pre-1.0; not yet on crates.io. Verified against a live Salesforce Developer
-Edition org via an integration test suite (`tests/integration/`).
+endpoint not yet typed is a one-liner away.
 
 ## Quick start
 
+`cirrus` runs on the [tokio](https://tokio.rs) runtime — internal retry/backoff
+sleeps and the auth-cache synchronization both rely on it. Add tokio alongside
+`cirrus` so you get a runtime entrypoint (`#[tokio::main]`) and a scheduler:
+
 ```toml
 [dependencies]
-cirrus = { git = "https://github.com/rfaulhaber/cirrus" }
+cirrus = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -103,14 +102,16 @@ clobbering a token a concurrent task just refreshed.
   full jitter; honors `Retry-After`. Configurable; off by default for non-idempotent 5xx.
 - **Sforce-Limit-Info capture** — every response's API quota header is parsed
   and surfaced via `sf.last_limit_info()`.
-- **Pagination as `futures::Stream`** — runtime-agnostic; no Tokio coupling at
-  the consumer surface. Drop the stream → no further fetches.
+- **Pagination as `futures::Stream`** — composes with `StreamExt` from any
+  async ecosystem, so the consumer API surface isn't tied to a specific
+  combinator crate. Drop the stream → no further fetches. (Execution still
+  runs on tokio, like the rest of the crate.)
 - **Conditional requests** — `describe_*_if_modified_since(SystemTime)` returns
   `Option<T>`; `None` on 304 Not Modified.
 - **Structured `tracing` events** — `cirrus::retry`, `cirrus::auth`,
   `cirrus::limit_info` targets. Never logs tokens or bodies.
 
-### Design: the escape hatch
+### The escape hatch
 
 The Salesforce REST surface is too large to wrap every endpoint. The client
 exposes verb methods that handle path resolution, auth, retry, and the
@@ -170,4 +171,4 @@ matches a known sandbox / Developer Edition / scratch My Domain pattern. See
 
 ## License
 
-Dual-licensed under MIT or Apache-2.0, at your option.
+Licensed under the MIT license.

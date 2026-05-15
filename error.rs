@@ -16,8 +16,7 @@ pub type CirrusResult<T> = Result<T, CirrusError>;
 /// A single Salesforce API error entry.
 ///
 /// Salesforce REST endpoints return errors as a JSON array of these objects.
-/// The shape is documented as schema-independent and applies to every REST
-/// resource, so we hard-code it.
+/// The shape is schema-independent and applies to every REST resource.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SalesforceError {
     /// Human-readable description of the error.

@@ -3,8 +3,7 @@
 //!
 //! Useful for tests, short-lived scripts, or callers that have already
 //! performed an OAuth flow out-of-band (e.g. via the `sfdx` CLI) and want to
-//! reuse the resulting token. Real OAuth flows (JWT Bearer, Web Server,
-//! Client Credentials, Device) live in sibling modules.
+//! reuse the resulting token. Real OAuth flows live in sibling modules.
 
 use crate::auth::AuthSession;
 use crate::error::CirrusResult;

@@ -3,16 +3,12 @@
 //!
 //! Salesforce groups several composite endpoints under
 //! `/services/data/{version}/composite/...`. This module hosts the typed
-//! handler for them. Currently exposes:
+//! handler for them, including:
 //!
 //! - [`CompositeHandler::batch`] — `POST /composite/batch`, up to 25
 //!   sub-requests in one call. Sub-requests run serially; the outer call
 //!   always returns HTTP 200 for a well-formed batch and per-subrequest
 //!   failures surface via [`BatchResponse::has_errors`].
-//!
-//! Composite tree, composite collections, and the chained `/composite`
-//! endpoint are tracked under Phase 2 and will plug into the same
-//! [`CompositeHandler`] as additional methods.
 //!
 //! # Sub-request URL shape
 //!
@@ -237,10 +233,6 @@ impl CompositeHandler<'_> {
     ///     println!("{} -> {}", sub.reference_id, sub.http_status_code);
     /// }
     /// ```
-    ///
-    /// Note: `Cirrus::execute` (the open-ended escape hatch) and
-    /// `CompositeHandler::execute` (this method) are unrelated despite
-    /// sharing a name — distinguished by their receivers and signatures.
     pub async fn execute<B>(&self, body: &B) -> CirrusResult<CompositeResponse>
     where
         B: Serialize + ?Sized,
@@ -543,9 +535,8 @@ pub struct BatchRequest {
 /// through the SDK's normal path resolution.
 ///
 /// `binaryPartName` / `binaryPartNameAlias` (used for multipart blob
-/// uploads) are intentionally not exposed here. If you need them, drop
-/// down to a `serde_json::json!({...})` body — the multipart transport
-/// itself isn't supported yet.
+/// uploads) are not exposed here. To use them, drop down to a
+/// `serde_json::json!({...})` body.
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchSubrequest {
     /// HTTP method, e.g. `"GET"`, `"POST"`, `"PATCH"`, `"DELETE"`.

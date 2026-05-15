@@ -346,9 +346,9 @@ impl BulkQueryHandler<'_> {
 
 /// Request body for [`BulkIngestHandler::create`].
 ///
-/// `content_type` is fixed to `"CSV"` server-side (only supported value)
-/// so we don't expose it. Salesforce defaults `column_delimiter` to
-/// `Comma` and `line_ending` to `LF` when omitted.
+/// `content_type` is fixed to `"CSV"` server-side (the only supported
+/// value) and is not exposed here. Salesforce defaults `column_delimiter`
+/// to `Comma` and `line_ending` to `LF` when omitted.
 #[derive(Debug, Clone, Serialize)]
 pub struct BulkIngestSpec {
     /// API name of the target sObject (e.g. `"Account"`).

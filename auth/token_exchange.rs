@@ -82,7 +82,7 @@ impl TokenExchangeGrantType {
 /// which of these are accepted (`isAccessTokenSupported`,
 /// `isRefreshTokenSupported`, `isIdTokenSupported`, `isSaml2Supported`,
 /// `isJwtSupported`). [`Custom`](Self::Custom) is provided as an escape
-/// hatch for token-type URNs Salesforce may add post-cutoff.
+/// hatch for token-type URNs not enumerated here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubjectTokenType {
     /// `urn:ietf:params:oauth:token-type:access_token` — OAuth 2.0 access token.

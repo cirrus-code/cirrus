@@ -3,7 +3,7 @@
 //! Two handler structs gate the surface:
 //!
 //! - [`SObjectsHandler`] (from [`Cirrus::sobjects`]): collection-level
-//!   operations that don't target a specific object — currently
+//!   operations that don't target a specific object —
 //!   [`describe_global`].
 //! - [`SObjectHandler`] (from [`Cirrus::sobject`]): per-object
 //!   operations — describe metadata, retrieve, create, update, delete,
@@ -25,7 +25,7 @@ use std::time::SystemTime;
 
 impl Cirrus {
     /// Returns a handler for collection-level sObject operations
-    /// (currently just describe global).
+    /// (describe global).
     pub fn sobjects(&self) -> SObjectsHandler<'_> {
         SObjectsHandler { client: self }
     }
@@ -443,9 +443,8 @@ impl<'a> SObjectHandler<'a> {
 /// | `Document`       | update    | `entity_content`    | `Body`            |
 /// | `Attachment`     | insert    | `entity_attachment` | `Body`            |
 ///
-/// (Note the inconsistency: Document insert vs update use different
-/// `json_part_name` values. This is per the docs, not a bug in this
-/// SDK.)
+/// Note that `Document` insert and update use different
+/// `json_part_name` values, per Salesforce's documentation.
 ///
 /// For other blob-bearing objects, consult the
 /// [Insert or Update Blob Data] doc — the convention is generally

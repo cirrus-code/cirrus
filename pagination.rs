@@ -58,9 +58,7 @@
 //! - **Bulk 2.0 query results** use a different cursor shape (the
 //!   `Sforce-Locator` response header carrying the literal string
 //!   `"null"` at end-of-stream) and yield CSV bytes, not JSON records.
-//!   Their typed wrapper lives at [`crate::handlers::bulk::BulkQueryHandler::results`];
-//!   a `Stream<Item = bytes::Bytes>` adapter for them would be a
-//!   separate type, intentionally not unified with this one.
+//!   Use [`crate::handlers::bulk::BulkQueryHandler::results`] instead.
 //! - **Search results** aren't paginated — Salesforce returns the full
 //!   `searchRecords` array in one response.
 //!

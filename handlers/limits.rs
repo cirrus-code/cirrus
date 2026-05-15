@@ -38,7 +38,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/limits"))
+            .and(path("/services/data/v66.0/limits"))
             .and(header("authorization", "Bearer tok"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "DailyApiRequests": {"Max": 5000, "Remaining": 4937},
@@ -74,7 +74,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/limits"))
+            .and(path("/services/data/v66.0/limits"))
             .respond_with(
                 ResponseTemplate::new(403).set_body_json(serde_json::json!([{
                     "message": "The user does not have View Setup and Configuration permission",

@@ -182,7 +182,7 @@ mod tests {
         let csv = "TIMESTAMP,EVENT_TYPE,USER_ID\n2024-01-01T00:00:00.000Z,API,005xx\n";
         Mock::given(method("GET"))
             .and(path(
-                "/services/data/v60.0/sobjects/EventLogFile/0ATD000000001bROAQ/LogFile",
+                "/services/data/v66.0/sobjects/EventLogFile/0ATD000000001bROAQ/LogFile",
             ))
             .and(header("authorization", "Bearer tok"))
             .and(header("accept", "text/csv"))
@@ -252,7 +252,7 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path(
-                "/services/data/v60.0/sobjects/EventLogFile/0ATmissing/LogFile",
+                "/services/data/v66.0/sobjects/EventLogFile/0ATmissing/LogFile",
             ))
             .respond_with(
                 ResponseTemplate::new(404).set_body_json(serde_json::json!([{
@@ -290,7 +290,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query"))
+            .and(path("/services/data/v66.0/query"))
             .and(query_param(
                 "q",
                 "SELECT Id, EventType, LogFile, LogDate, LogFileLength FROM EventLogFile",
@@ -338,7 +338,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query"))
+            .and(path("/services/data/v66.0/query"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "totalSize": 1,
                 "done": true,

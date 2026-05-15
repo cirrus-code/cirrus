@@ -74,7 +74,7 @@ use serde::de::DeserializeOwned;
 use std::sync::{Arc, RwLock};
 
 /// Default Salesforce REST API version when the caller doesn't override it.
-pub const DEFAULT_API_VERSION: &str = "v60.0";
+pub const DEFAULT_API_VERSION: &str = "v66.0";
 
 /// Default User-Agent header value sent on every request.
 pub(crate) const DEFAULT_USER_AGENT: &str = concat!(
@@ -146,7 +146,7 @@ impl Cirrus {
         CirrusBuilder::default()
     }
 
-    /// Returns the configured API version (e.g. `"v60.0"`).
+    /// Returns the configured API version (e.g. `"v66.0"`).
     pub fn api_version(&self) -> &str {
         &self.api_version
     }
@@ -249,7 +249,7 @@ impl Cirrus {
         );
         let mut url = url::Url::parse(&base)?;
         // The trailing '/' on `base` leaves an empty path segment; without
-        // popping it, `extend` produces `.../v60.0//sobjects/...`.
+        // popping it, `extend` produces `.../v66.0//sobjects/...`.
         url.path_segments_mut()
             .map_err(|()| CirrusError::InvalidResponse("instance URL is not hierarchical".into()))?
             .pop_if_empty()
@@ -895,7 +895,7 @@ impl CirrusBuilder {
         self
     }
 
-    /// Sets the Salesforce REST API version, e.g. `"v60.0"`. Defaults to
+    /// Sets the Salesforce REST API version, e.g. `"v66.0"`. Defaults to
     /// [`DEFAULT_API_VERSION`].
     pub fn api_version(mut self, version: impl Into<String>) -> Self {
         self.api_version = Some(version.into());
@@ -1015,7 +1015,7 @@ mod tests {
     fn resolve_url_versioned_for_relative_path() {
         let sf = fixture("https://my.salesforce.com");
         let url = sf.resolve_url("limits");
-        assert_eq!(url, "https://my.salesforce.com/services/data/v60.0/limits");
+        assert_eq!(url, "https://my.salesforce.com/services/data/v66.0/limits");
     }
 
     #[test]
@@ -1024,7 +1024,7 @@ mod tests {
         let url = sf.resolve_url("sobjects/Account/001");
         assert_eq!(
             url,
-            "https://my.salesforce.com/services/data/v60.0/sobjects/Account/001"
+            "https://my.salesforce.com/services/data/v66.0/sobjects/Account/001"
         );
     }
 
@@ -1076,7 +1076,7 @@ mod tests {
         async fn get_resolves_relative_path_as_versioned() {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .and(header("authorization", "Bearer tok"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
                 .mount(&server)
@@ -1125,7 +1125,7 @@ mod tests {
         async fn post_sends_json_body() {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
-                .and(path("/services/data/v60.0/composite/batch"))
+                .and(path("/services/data/v66.0/composite/batch"))
                 .and(body_json(json!({"batchRequests": []})))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({"results": []})))
                 .mount(&server)
@@ -1143,7 +1143,7 @@ mod tests {
         async fn put_sends_json_body() {
             let server = MockServer::start().await;
             Mock::given(method("PUT"))
-                .and(path("/services/data/v60.0/custom/resource"))
+                .and(path("/services/data/v66.0/custom/resource"))
                 .and(body_json(json!({"k": "v"})))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({"updated": true})))
                 .mount(&server)
@@ -1158,7 +1158,7 @@ mod tests {
         async fn patch_sends_json_body() {
             let server = MockServer::start().await;
             Mock::given(method("PATCH"))
-                .and(path("/services/data/v60.0/sobjects/Account/001"))
+                .and(path("/services/data/v66.0/sobjects/Account/001"))
                 .and(body_json(json!({"Name": "X"})))
                 .respond_with(ResponseTemplate::new(204))
                 .mount(&server)
@@ -1174,7 +1174,7 @@ mod tests {
         async fn delete_handles_204() {
             let server = MockServer::start().await;
             Mock::given(method("DELETE"))
-                .and(path("/services/data/v60.0/sobjects/Account/001"))
+                .and(path("/services/data/v66.0/sobjects/Account/001"))
                 .respond_with(ResponseTemplate::new(204))
                 .mount(&server)
                 .await;
@@ -1190,7 +1190,7 @@ mod tests {
             // need to re-attach the bearer token.
             let server = MockServer::start().await;
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .and(header("authorization", "Bearer tok"))
                 .and(header("x-custom", "added-by-caller"))
                 .respond_with(ResponseTemplate::new(200))
@@ -1270,13 +1270,13 @@ mod tests {
             // so we use `up_to_n_times` to scope the 429 mock to the
             // first two requests.
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(ResponseTemplate::new(429))
                 .up_to_n_times(2)
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
                 .mount(&server)
                 .await;
@@ -1291,13 +1291,13 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(ResponseTemplate::new(503))
                 .up_to_n_times(1)
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
                 .mount(&server)
                 .await;
@@ -1313,7 +1313,7 @@ mod tests {
 
             // Default policy retries 3 times → 4 total attempts.
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(ResponseTemplate::new(503).set_body_json(json!([{
                     "errorCode": "SERVER_UNAVAILABLE",
                     "message": "Service Unavailable"
@@ -1335,7 +1335,7 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(ResponseTemplate::new(404).set_body_json(json!([{
                     "errorCode": "NOT_FOUND",
                     "message": "not found"
@@ -1357,7 +1357,7 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("POST"))
-                .and(path("/services/data/v60.0/sobjects/Account"))
+                .and(path("/services/data/v66.0/sobjects/Account"))
                 .respond_with(ResponseTemplate::new(500).set_body_json(json!([{
                     "errorCode": "INTERNAL_ERROR",
                     "message": "boom"
@@ -1379,13 +1379,13 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(ResponseTemplate::new(500))
                 .up_to_n_times(1)
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
                 .mount(&server)
                 .await;
@@ -1400,7 +1400,7 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(ResponseTemplate::new(429))
                 .expect(1)
                 .mount(&server)
@@ -1416,7 +1416,7 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(
                     ResponseTemplate::new(200)
                         .set_body_json(json!({"ok": true}))
@@ -1442,7 +1442,7 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(
                     ResponseTemplate::new(200)
                         .set_body_json(json!({"ok": true}))
@@ -1452,7 +1452,7 @@ mod tests {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(
                     ResponseTemplate::new(200)
                         .set_body_json(json!({"ok": true}))
@@ -1473,7 +1473,7 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(
                     ResponseTemplate::new(200)
                         .set_body_json(json!({"ok": true}))
@@ -1499,13 +1499,13 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
                 .up_to_n_times(1)
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
                 .mount(&server)
                 .await;
@@ -1592,7 +1592,7 @@ mod tests {
 
             // First request (Bearer old): 401. Second (Bearer new): 200.
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .and(header("authorization", "Bearer old"))
                 .respond_with(ResponseTemplate::new(401).set_body_json(json!([{
                     "errorCode": "INVALID_SESSION_ID",
@@ -1602,7 +1602,7 @@ mod tests {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .and(header("authorization", "Bearer new"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
                 .expect(1)
@@ -1629,7 +1629,7 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(ResponseTemplate::new(401).set_body_json(json!([{
                     "errorCode": "INVALID_SESSION_ID",
                     "message": "..."
@@ -1655,7 +1655,7 @@ mod tests {
 
             // Both Bearer values get 401.
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(ResponseTemplate::new(401).set_body_json(json!([{
                     "errorCode": "INSUFFICIENT_ACCESS",
                     "message": "..."
@@ -1678,7 +1678,7 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/limits"))
+                .and(path("/services/data/v66.0/limits"))
                 .respond_with(ResponseTemplate::new(403).set_body_json(json!([{
                     "errorCode": "INSUFFICIENT_ACCESS",
                     "message": "..."
@@ -1703,7 +1703,7 @@ mod tests {
 /// trailing-slash, double-slash, and percent-encoding invariants that
 /// would otherwise be infinitely re-rediscoverable through targeted
 /// unit tests. The trailing-slash bug we hit during sObject CRUD
-/// (`.../v60.0//sobjects/...`) would have been caught by the no-double-
+/// (`.../v66.0//sobjects/...`) would have been caught by the no-double-
 /// slash property below.
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

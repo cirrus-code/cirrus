@@ -9,6 +9,22 @@ keywords = ["salesforce", "api", "client", "sdk", "rest"]
 categories = ["api-bindings", "web-programming::http-client"]
 readme = "README.md"
 repository = "https://github.com/cirrus-code/cirrus"
+homepage = "https://github.com/cirrus-code/cirrus"
+documentation = "https://docs.rs/cirrus"
+exclude = [
+    "/.github/",
+    "/.envrc",
+    "/.env.example",
+    "/.gitignore",
+    "/CLAUDE.md",
+    "/clippy.toml",
+    "/deny.toml",
+    "/flake.lock",
+    "/flake.nix",
+    "/rust-toolchain.toml",
+    "/tests/integration",
+    "/tests/integration.rs",
+]
 
 [lib]
 path = "lib.rs"

@@ -93,7 +93,7 @@ impl Cirrus {
     /// [`query`](Self::query) or [`query_all`](Self::query_all) call.
     ///
     /// The locator is an instance-relative path (e.g.
-    /// `/services/data/v60.0/query/01g…-2000`). Pass it through verbatim;
+    /// `/services/data/v66.0/query/01g…-2000`). Pass it through verbatim;
     /// the leading `/` is optional.
     pub async fn query_more(&self, next_records_url: &str) -> CirrusResult<QueryResult<Value>> {
         self.query_more_as(next_records_url).await
@@ -192,7 +192,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query"))
+            .and(path("/services/data/v66.0/query"))
             .and(query_param("q", "SELECT Id, Name FROM Account LIMIT 1"))
             .and(header("authorization", "Bearer tok"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -222,11 +222,11 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query"))
+            .and(path("/services/data/v66.0/query"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 2500,
                 "done": false,
-                "nextRecordsUrl": "/services/data/v60.0/query/01gD0000002HU6KIAW-2000",
+                "nextRecordsUrl": "/services/data/v66.0/query/01gD0000002HU6KIAW-2000",
                 "records": []
             })))
             .mount(&server)
@@ -238,7 +238,7 @@ mod tests {
         assert_eq!(qr.total_size, 2500);
         assert_eq!(
             qr.next_records_url.as_deref(),
-            Some("/services/data/v60.0/query/01gD0000002HU6KIAW-2000")
+            Some("/services/data/v66.0/query/01gD0000002HU6KIAW-2000")
         );
     }
 
@@ -247,7 +247,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/queryAll"))
+            .and(path("/services/data/v66.0/queryAll"))
             .and(query_param(
                 "q",
                 "SELECT Id, IsDeleted FROM Account WHERE IsDeleted = TRUE",
@@ -275,10 +275,10 @@ mod tests {
     async fn query_more_follows_locator() {
         let server = MockServer::start().await;
 
-        // Locator carries v60.0 — this is what `nextRecordsUrl` returns
-        // after a v60.0 query, regardless of the client's configured version.
+        // Locator carries v66.0 — this is what `nextRecordsUrl` returns
+        // after a v66.0 query, regardless of the client's configured version.
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query/01gD0000002HU6KIAW-2000"))
+            .and(path("/services/data/v66.0/query/01gD0000002HU6KIAW-2000"))
             .and(header("authorization", "Bearer tok"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 2500,
@@ -292,7 +292,7 @@ mod tests {
 
         let sf = fixture(server.uri());
         let qr = sf
-            .query_more("/services/data/v60.0/query/01gD0000002HU6KIAW-2000")
+            .query_more("/services/data/v66.0/query/01gD0000002HU6KIAW-2000")
             .await
             .unwrap();
         assert!(qr.done);
@@ -304,7 +304,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query/01gXXX-2000"))
+            .and(path("/services/data/v66.0/query/01gXXX-2000"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 0,
                 "done": true,
@@ -315,7 +315,7 @@ mod tests {
 
         let sf = fixture(server.uri());
         let qr = sf
-            .query_more("services/data/v60.0/query/01gXXX-2000")
+            .query_more("services/data/v66.0/query/01gXXX-2000")
             .await
             .unwrap();
         assert!(qr.done);
@@ -331,7 +331,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query"))
+            .and(path("/services/data/v66.0/query"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 1,
                 "done": true,
@@ -356,7 +356,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query"))
+            .and(path("/services/data/v66.0/query"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!([{
                 "message": "unexpected token: SELECTT",
                 "errorCode": "MALFORMED_QUERY"

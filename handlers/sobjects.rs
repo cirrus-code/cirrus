@@ -500,7 +500,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/sobjects"))
+            .and(path("/services/data/v66.0/sobjects"))
             .and(header("authorization", "Bearer tok"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "encoding": "UTF-8",
@@ -515,9 +515,9 @@ mod tests {
                     "retrieveable": true, "searchable": true, "triggerable": true,
                     "undeletable": true, "updateable": true,
                     "urls": {
-                        "sobject": "/services/data/v60.0/sobjects/Account",
-                        "describe": "/services/data/v60.0/sobjects/Account/describe",
-                        "rowTemplate": "/services/data/v60.0/sobjects/Account/{ID}"
+                        "sobject": "/services/data/v66.0/sobjects/Account",
+                        "describe": "/services/data/v66.0/sobjects/Account/describe",
+                        "rowTemplate": "/services/data/v66.0/sobjects/Account/{ID}"
                     }
                 }]
             })))
@@ -537,7 +537,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/sobjects/Account/describe"))
+            .and(path("/services/data/v66.0/sobjects/Account/describe"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "name": "Account",
                 "label": "Account",
@@ -557,7 +557,7 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path(
-                "/services/data/v60.0/sobjects/Account/001xx0000000001",
+                "/services/data/v66.0/sobjects/Account/001xx0000000001",
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "Id": "001xx0000000001",
@@ -582,7 +582,7 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path(
-                "/services/data/v60.0/sobjects/Account/001xx0000000001",
+                "/services/data/v66.0/sobjects/Account/001xx0000000001",
             ))
             .and(query_param("fields", "Name,Industry"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -607,7 +607,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/sobjects/Account"))
+            .and(path("/services/data/v66.0/sobjects/Account"))
             .and(body_json(json!({"Name": "Acme"})))
             .respond_with(ResponseTemplate::new(201).set_body_json(json!({
                 "id": "001xx0000000001",
@@ -633,7 +633,7 @@ mod tests {
 
         Mock::given(method("PATCH"))
             .and(path(
-                "/services/data/v60.0/sobjects/Account/001xx0000000001",
+                "/services/data/v66.0/sobjects/Account/001xx0000000001",
             ))
             .and(body_json(json!({"Industry": "Biotech"})))
             .respond_with(ResponseTemplate::new(204))
@@ -653,7 +653,7 @@ mod tests {
 
         Mock::given(method("DELETE"))
             .and(path(
-                "/services/data/v60.0/sobjects/Account/001xx0000000001",
+                "/services/data/v66.0/sobjects/Account/001xx0000000001",
             ))
             .respond_with(ResponseTemplate::new(204))
             .mount(&server)
@@ -672,7 +672,7 @@ mod tests {
 
         Mock::given(method("PATCH"))
             .and(path(
-                "/services/data/v60.0/sobjects/Account/External_Id__c/EXT-1",
+                "/services/data/v66.0/sobjects/Account/External_Id__c/EXT-1",
             ))
             .and(body_json(json!({"Name": "Acme"})))
             .respond_with(ResponseTemplate::new(201).set_body_json(json!({
@@ -704,7 +704,7 @@ mod tests {
         // the literal value is what arrives at the server.
         Mock::given(method("PATCH"))
             .and(path_regex(
-                r"^/services/data/v60\.0/sobjects/Account/External_Id__c/.+$",
+                r"^/services/data/v66\.0/sobjects/Account/External_Id__c/.+$",
             ))
             .and(body_json(json!({"Name": "Edge"})))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -736,7 +736,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(
-                "/services/data/v60.0/sobjects/Account/001xx0000000001",
+                "/services/data/v66.0/sobjects/Account/001xx0000000001",
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Name": "Acme"})))
             .mount(&server)
@@ -756,7 +756,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/sobjects/Account"))
+            .and(path("/services/data/v66.0/sobjects/Account"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!([{
                 "message": "Required fields are missing: [Name]",
                 "errorCode": "REQUIRED_FIELD_MISSING",
@@ -797,7 +797,7 @@ mod tests {
             // formatted as RFC 7231 IMF-fixdate (e.g. "Wed, 21 Oct
             // 2015 07:28:00 GMT" — the comma + space is the giveaway).
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/sobjects"))
+                .and(path("/services/data/v66.0/sobjects"))
                 .and(header_regex(
                     "if-modified-since",
                     r"^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$",
@@ -837,7 +837,7 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/sobjects"))
+                .and(path("/services/data/v66.0/sobjects"))
                 .and(header_regex("if-modified-since", r"GMT$"))
                 .respond_with(ResponseTemplate::new(304))
                 .mount(&server)
@@ -863,7 +863,7 @@ mod tests {
 
             let server = MockServer::start().await;
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/sobjects/Account/describe"))
+                .and(path("/services/data/v66.0/sobjects/Account/describe"))
                 .and(header_regex("if-modified-since", r"GMT$"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                     "name": "Account",
@@ -888,7 +888,7 @@ mod tests {
         async fn describe_per_object_if_modified_since_none_on_304() {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/sobjects/Account/describe"))
+                .and(path("/services/data/v66.0/sobjects/Account/describe"))
                 .respond_with(ResponseTemplate::new(304))
                 .mount(&server)
                 .await;
@@ -909,7 +909,7 @@ mod tests {
             // the standard error-array parsing.
             let server = MockServer::start().await;
             Mock::given(method("GET"))
-                .and(path("/services/data/v60.0/sobjects"))
+                .and(path("/services/data/v66.0/sobjects"))
                 .respond_with(ResponseTemplate::new(403).set_body_json(json!([{
                     "errorCode": "INSUFFICIENT_ACCESS",
                     "message": "no permission"
@@ -939,7 +939,7 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("POST"))
-                .and(path("/services/data/v60.0/sobjects/ContentVersion"))
+                .and(path("/services/data/v66.0/sobjects/ContentVersion"))
                 .and(header("authorization", "Bearer tok"))
                 .and(header_regex(
                     "content-type",
@@ -985,7 +985,7 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("POST"))
-                .and(path("/services/data/v60.0/sobjects/Document"))
+                .and(path("/services/data/v66.0/sobjects/Document"))
                 .and(body_string_contains("application/octet-stream"))
                 .respond_with(ResponseTemplate::new(201).set_body_json(json!({
                     "id": "015D000000000",
@@ -1014,7 +1014,7 @@ mod tests {
             let server = MockServer::start().await;
 
             Mock::given(method("POST"))
-                .and(path("/services/data/v60.0/sobjects/Document"))
+                .and(path("/services/data/v66.0/sobjects/Document"))
                 .respond_with(ResponseTemplate::new(400).set_body_json(json!([{
                     "fields": ["FolderId"],
                     "message": "Folder ID: id value of incorrect type",
@@ -1054,7 +1054,7 @@ mod tests {
             // `entity_content` JSON part name (not entity_document) on
             // PATCH — verifying that quirk passes through.
             Mock::given(method("PATCH"))
-                .and(path("/services/data/v60.0/sobjects/Document/015D000000000"))
+                .and(path("/services/data/v66.0/sobjects/Document/015D000000000"))
                 .and(header_regex(
                     "content-type",
                     r"^multipart/form-data; boundary=",

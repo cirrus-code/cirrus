@@ -6,13 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `cirrus` is a Rust HTTP client for the Salesforce REST API (unaffiliated with Salesforce). Pre-1.0; not yet on crates.io.
 
-Shipped surface (live snapshot in `TODO.org`):
+Shipped surface:
 - All five priority OAuth flows (JWT, Refresh, Client Credentials, Web Server PKCE, Token Exchange) + Static.
 - Phase 1: versions, limits, describe (global + per-object), sObject CRUD, query/queryAll/queryMore, search/parameterizedSearch.
 - Phase 2: composite/batch, composite/tree, composite/sobjects (incl. `retrieve_with_body`), generic `/composite`, Bulk 2.0 (ingest + query), Apex REST passthrough, Tooling API, Event Monitoring.
 - Cross-cutting: open-ended client escape hatch, pagination stream (`futures::Stream`), retry + backoff policy, `Sforce-Limit-Info` surfacing, auto-refresh on 401, multipart blob uploads.
 
-Tests: ~256 unit + 2 doctest, all wiremock-backed, fast (<1s wall). No SOAP, no legacy auth (username-password OAuth, etc.) — see `TODO.org` for the SKIP list.
+Tests: 279 unit + 17 doctest, all wiremock-backed, fast (<5s wall). No SOAP, no legacy auth (username-password OAuth, etc.).
 
 ## Architecture
 
@@ -46,29 +46,6 @@ If you find yourself wanting a fifth, first check whether the existing four woul
 - Methods that return records expose two variants: the default (returns `serde_json::Value`) and `_as::<R>` for typed deserialization.
 - **Never** model org-specific types. Platform envelopes (response shapes Salesforce defines) live in `response.rs` and are re-exported at the crate root; record types are caller-supplied via the generic `R: DeserializeOwned`.
 - Pagination support: handlers with paginated GETs add `_stream` / `_stream_as` variants returning `pagination::Records<R>` (a `futures::Stream`). See `query`/`tooling.query` for the pattern.
-
-## Documentation fetching
-
-`scripts/sf-doc.nu` is the canonical doc-audit tool. It hits `developer.salesforce.com`'s internal JSON content API directly (not the SPA — that path is slower and racy). Cache lands in `~/.cache/cirrus/sf-docs/`.
-
-```bash
-# Discover canonical page IDs for a guide (writes manifest-{guide}.json to cache).
-nu scripts/sf-doc.nu --guide api_rest --manifest
-
-# Fetch a specific page by id (preferred — see caveat below).
-nu scripts/sf-doc.nu --guide api_rest --page resources_query
-
-# Fetch by full URL (works, but URL slugs aren't always page ids).
-nu scripts/sf-doc.nu 'https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/dome_query.htm'
-```
-
-**Caveats:**
-
-- **URL slug ≠ manifest page id.** A doc-site URL like `tooling_api_rest_query.htm` may not exist as a real page id; the canonical id from the manifest's TOC is `intro_rest_resources`. **Always use `--manifest` first** to find real page ids before fetching individual pages.
-- **`xcloud.*` / `help.salesforce.com` pages are out of reach.** OAuth flow specifics live there but the Visualforce/Aura SPA can't be defeated with curl. For auth-flow audits, work from RFC specs (RFC 6749, 7523, 7636, 8693) and cross-references in fetchable guides.
-- **The script shells out to `curl`** — its default User-Agent is whitelisted by `developer.salesforce.com`'s docs site, while browser UAs (Mozilla/*) get 403'd. Don't try to "improve" by spoofing browser headers.
-
-The probe scripts (`scripts/sf-doc-probe.js` / `.nu`) are kept for future investigations if Salesforce changes the content endpoint pattern.
 
 ## Test conventions
 
@@ -105,13 +82,9 @@ Persistent notes the user has flagged for future sessions live in `~/.claude/pro
 
 ## Repository Layout
 
-This crate uses a **non-standard layout** — `lib.rs` and `main.rs` live at the repository root, not under `src/`. `Cargo.toml` wires this up explicitly:
+This crate uses a **non-standard layout** — `lib.rs` lives at the repository root, not under `src/`. `Cargo.toml` wires this up explicitly:
 
 ```toml
-[[bin]]
-name = "main"
-path = "main.rs"
-
 [lib]
 path = "lib.rs"
 ```
@@ -127,8 +100,7 @@ Edition is **2024** — code may use features unavailable in older editions.
 ## Common Commands
 
 ```bash
-cargo build                  # Build the workspace
-cargo run --bin main         # Run the binary
+cargo build                  # Build the crate
 cargo nextest run            # Run tests (preferred — flake provides nextest)
 cargo test                   # Fallback test runner
 cargo nextest run <pattern>  # Run a single test by name substring

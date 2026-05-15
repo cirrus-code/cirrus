@@ -98,7 +98,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/search"))
+            .and(path("/services/data/v66.0/search"))
             .and(query_param(
                 "q",
                 "FIND {Acme} IN NAME FIELDS RETURNING Account(Id, Name)",
@@ -109,7 +109,7 @@ mod tests {
                     {
                         "attributes": {
                             "type": "Account",
-                            "url": "/services/data/v60.0/sobjects/Account/001xx"
+                            "url": "/services/data/v66.0/sobjects/Account/001xx"
                         },
                         "Id": "001xx",
                         "Name": "Acme"
@@ -133,7 +133,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/search"))
+            .and(path("/services/data/v66.0/search"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"searchRecords": []})))
             .mount(&server)
             .await;
@@ -159,7 +159,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/search"))
+            .and(path("/services/data/v66.0/search"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "searchRecords": [
                     {"attributes": {"type": "Account"}, "Id": "001xx", "Name": "Acme"}
@@ -182,7 +182,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/search"))
+            .and(path("/services/data/v66.0/search"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!([{
                 "message": "unexpected token: foo",
                 "errorCode": "MALFORMED_SEARCH"
@@ -212,7 +212,7 @@ mod tests {
         });
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/parameterizedSearch"))
+            .and(path("/services/data/v66.0/parameterizedSearch"))
             .and(header("authorization", "Bearer tok"))
             .and(body_json(request_body.clone()))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -220,7 +220,7 @@ mod tests {
                     {
                         "attributes": {
                             "type": "Account",
-                            "url": "/services/data/v60.0/sobjects/Account/001xx"
+                            "url": "/services/data/v66.0/sobjects/Account/001xx"
                         },
                         "Id": "001xx",
                         "Name": "Acme"
@@ -228,7 +228,7 @@ mod tests {
                     {
                         "attributes": {
                             "type": "Contact",
-                            "url": "/services/data/v60.0/sobjects/Contact/003yy"
+                            "url": "/services/data/v66.0/sobjects/Contact/003yy"
                         },
                         "Id": "003yy",
                         "Name": "Acme Smith"
@@ -250,7 +250,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/parameterizedSearch"))
+            .and(path("/services/data/v66.0/parameterizedSearch"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "searchRecords": [],
                 "metadata": {
@@ -283,7 +283,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/parameterizedSearch"))
+            .and(path("/services/data/v66.0/parameterizedSearch"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "searchRecords": [
                     {"attributes": {"type": "Account"}, "Id": "001xx"}
@@ -305,7 +305,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/parameterizedSearch"))
+            .and(path("/services/data/v66.0/parameterizedSearch"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!([{
                 "message": "Invalid search scope",
                 "errorCode": "INVALID_SEARCH_SCOPE"

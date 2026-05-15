@@ -232,7 +232,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query"))
+            .and(path("/services/data/v66.0/query"))
             .and(query_param("q", "SELECT Id FROM Account"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 2,
@@ -266,12 +266,12 @@ mod tests {
 
         // Page 1 — initial query.
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query"))
+            .and(path("/services/data/v66.0/query"))
             .and(query_param("q", "SELECT Id FROM Account"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 6,
                 "done": false,
-                "nextRecordsUrl": "/services/data/v60.0/query/01gAA-2",
+                "nextRecordsUrl": "/services/data/v66.0/query/01gAA-2",
                 "records": [
                     {"attributes": {"type": "Account"}, "Id": "001a"},
                     {"attributes": {"type": "Account"}, "Id": "001b"}
@@ -283,11 +283,11 @@ mod tests {
 
         // Page 2 — first nextRecordsUrl follow-up.
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query/01gAA-2"))
+            .and(path("/services/data/v66.0/query/01gAA-2"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 6,
                 "done": false,
-                "nextRecordsUrl": "/services/data/v60.0/query/01gAA-4",
+                "nextRecordsUrl": "/services/data/v66.0/query/01gAA-4",
                 "records": [
                     {"attributes": {"type": "Account"}, "Id": "001c"},
                     {"attributes": {"type": "Account"}, "Id": "001d"}
@@ -299,7 +299,7 @@ mod tests {
 
         // Page 3 — final follow-up.
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query/01gAA-4"))
+            .and(path("/services/data/v66.0/query/01gAA-4"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 6,
                 "done": true,
@@ -331,11 +331,11 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query"))
+            .and(path("/services/data/v66.0/query"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 2500,
                 "done": false,
-                "nextRecordsUrl": "/services/data/v60.0/query/01gAA-2",
+                "nextRecordsUrl": "/services/data/v66.0/query/01gAA-2",
                 "records": [
                     {"attributes": {"type": "Account"}, "Id": "001a"}
                 ]
@@ -345,7 +345,7 @@ mod tests {
             .await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query/01gAA-2"))
+            .and(path("/services/data/v66.0/query/01gAA-2"))
             .respond_with(ResponseTemplate::new(503).set_body_json(json!([{
                 "errorCode": "SERVER_UNAVAILABLE",
                 "message": "Service Unavailable"
@@ -379,11 +379,11 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query"))
+            .and(path("/services/data/v66.0/query"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 100,
                 "done": false,
-                "nextRecordsUrl": "/services/data/v60.0/query/01gAA-2",
+                "nextRecordsUrl": "/services/data/v66.0/query/01gAA-2",
                 "records": [
                     {"attributes": {"type": "Account"}, "Id": "001a"},
                     {"attributes": {"type": "Account"}, "Id": "001b"}
@@ -397,7 +397,7 @@ mod tests {
         // both records on page 1 (since neither buffer-empty nor
         // explicit poll-for-next has happened yet).
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query/01gAA-2"))
+            .and(path("/services/data/v66.0/query/01gAA-2"))
             .respond_with(ResponseTemplate::new(500))
             .expect(0)
             .mount(&server)
@@ -426,7 +426,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query"))
+            .and(path("/services/data/v66.0/query"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 2,
                 "done": true,
@@ -453,7 +453,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/queryAll"))
+            .and(path("/services/data/v66.0/queryAll"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 1,
                 "done": true,
@@ -484,11 +484,11 @@ mod tests {
 
         // Initial Tooling page.
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/tooling/query"))
+            .and(path("/services/data/v66.0/tooling/query"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 4,
                 "done": false,
-                "nextRecordsUrl": "/services/data/v60.0/tooling/query/01gAA-2",
+                "nextRecordsUrl": "/services/data/v66.0/tooling/query/01gAA-2",
                 "records": [
                     {"attributes": {"type": "ApexClass"}, "Id": "01p1"},
                     {"attributes": {"type": "ApexClass"}, "Id": "01p2"}
@@ -500,7 +500,7 @@ mod tests {
 
         // Tooling-prefixed nextRecordsUrl follow-up.
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/tooling/query/01gAA-2"))
+            .and(path("/services/data/v66.0/tooling/query/01gAA-2"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 4,
                 "done": true,
@@ -535,13 +535,13 @@ mod tests {
         let counter = fetch_count.clone();
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query"))
+            .and(path("/services/data/v66.0/query"))
             .respond_with(move |_req: &Request| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 ResponseTemplate::new(200).set_body_json(json!({
                     "totalSize": 4,
                     "done": false,
-                    "nextRecordsUrl": "/services/data/v60.0/query/01gAA-2",
+                    "nextRecordsUrl": "/services/data/v66.0/query/01gAA-2",
                     "records": [
                         {"attributes": {"type": "Account"}, "Id": "001a"},
                         {"attributes": {"type": "Account"}, "Id": "001b"}
@@ -553,7 +553,7 @@ mod tests {
 
         let counter2 = fetch_count.clone();
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/query/01gAA-2"))
+            .and(path("/services/data/v66.0/query/01gAA-2"))
             .respond_with(move |_req: &Request| {
                 counter2.fetch_add(1, Ordering::SeqCst);
                 ResponseTemplate::new(200).set_body_json(json!({

@@ -78,7 +78,7 @@ impl CompositeHandler<'_> {
     /// `body` is any [`Serialize`] value matching Salesforce's documented
     /// shape — typically a [`BatchRequest`] from this crate, or a hand-rolled
     /// `serde_json::json!({...})`. Sub-request URLs must include their own
-    /// API version prefix (e.g. `"v60.0/sobjects/Account/001…"`).
+    /// API version prefix (e.g. `"v66.0/sobjects/Account/001…"`).
     ///
     /// Sub-requests execute serially in submission order. A sub-request that
     /// fails does *not* roll back commits made by earlier sub-requests; the
@@ -95,12 +95,12 @@ impl CompositeHandler<'_> {
     ///     batch_requests: vec![
     ///         BatchSubrequest {
     ///             method: "GET".into(),
-    ///             url: "v60.0/limits".into(),
+    ///             url: "v66.0/limits".into(),
     ///             rich_input: None,
     ///         },
     ///         BatchSubrequest {
     ///             method: "PATCH".into(),
-    ///             url: "v60.0/sobjects/Account/001xx".into(),
+    ///             url: "v66.0/sobjects/Account/001xx".into(),
     ///             rich_input: Some(json!({"Name": "Acme"})),
     ///         },
     ///     ],
@@ -211,14 +211,14 @@ impl CompositeHandler<'_> {
     ///     composite_request: vec![
     ///         CompositeSubrequest {
     ///             method: "POST".into(),
-    ///             url: "/services/data/v60.0/sobjects/Account".into(),
+    ///             url: "/services/data/v66.0/sobjects/Account".into(),
     ///             reference_id: "NewAccount".into(),
     ///             body: Some(json!({"Name": "Acme"})),
     ///             http_headers: None,
     ///         },
     ///         CompositeSubrequest {
     ///             method: "POST".into(),
-    ///             url: "/services/data/v60.0/sobjects/Contact".into(),
+    ///             url: "/services/data/v66.0/sobjects/Contact".into(),
     ///             reference_id: "NewContact".into(),
     ///             body: Some(json!({
     ///                 "AccountId": "@{NewAccount.id}",
@@ -531,7 +531,7 @@ pub struct BatchRequest {
 ///
 /// `url` is the sub-request target as Salesforce dispatches it under
 /// `/services/data/`. It must include the API version prefix
-/// (e.g. `"v60.0/sobjects/Account/001…"`); sub-request URLs do *not* go
+/// (e.g. `"v66.0/sobjects/Account/001…"`); sub-request URLs do *not* go
 /// through the SDK's normal path resolution.
 ///
 /// `binaryPartName` / `binaryPartNameAlias` (used for multipart blob
@@ -573,18 +573,18 @@ mod tests {
             "batchRequests": [
                 {
                     "method": "PATCH",
-                    "url": "v60.0/sobjects/Account/001xx",
+                    "url": "v66.0/sobjects/Account/001xx",
                     "richInput": {"Name": "NewName"}
                 },
                 {
                     "method": "GET",
-                    "url": "v60.0/sobjects/Account/001xx?fields=Name"
+                    "url": "v66.0/sobjects/Account/001xx?fields=Name"
                 }
             ]
         });
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite/batch"))
+            .and(path("/services/data/v66.0/composite/batch"))
             .and(header("authorization", "Bearer tok"))
             .and(body_json(request_body.clone()))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -621,18 +621,18 @@ mod tests {
             "batchRequests": [
                 {
                     "method": "PATCH",
-                    "url": "v60.0/sobjects/account/001D000000K0fXOIAZ",
+                    "url": "v66.0/sobjects/account/001D000000K0fXOIAZ",
                     "richInput": {"Name": "NewName"}
                 },
                 {
                     "method": "GET",
-                    "url": "v60.0/sobjects/account/001D000000K0fXOIAZ?fields=Name,BillingPostalCode"
+                    "url": "v66.0/sobjects/account/001D000000K0fXOIAZ?fields=Name,BillingPostalCode"
                 }
             ]
         });
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite/batch"))
+            .and(path("/services/data/v66.0/composite/batch"))
             .and(body_json(expected_body))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "hasErrors": false,
@@ -646,12 +646,12 @@ mod tests {
             batch_requests: vec![
                 BatchSubrequest {
                     method: "PATCH".into(),
-                    url: "v60.0/sobjects/account/001D000000K0fXOIAZ".into(),
+                    url: "v66.0/sobjects/account/001D000000K0fXOIAZ".into(),
                     rich_input: Some(json!({"Name": "NewName"})),
                 },
                 BatchSubrequest {
                     method: "GET".into(),
-                    url: "v60.0/sobjects/account/001D000000K0fXOIAZ?fields=Name,BillingPostalCode"
+                    url: "v66.0/sobjects/account/001D000000K0fXOIAZ?fields=Name,BillingPostalCode"
                         .into(),
                     rich_input: None,
                 },
@@ -668,10 +668,10 @@ mod tests {
 
         // haltOnError is present and `true` in the body.
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite/batch"))
+            .and(path("/services/data/v66.0/composite/batch"))
             .and(body_json(json!({
                 "batchRequests": [
-                    {"method": "GET", "url": "v60.0/limits"}
+                    {"method": "GET", "url": "v66.0/limits"}
                 ],
                 "haltOnError": true
             })))
@@ -686,7 +686,7 @@ mod tests {
         let req = BatchRequest {
             batch_requests: vec![BatchSubrequest {
                 method: "GET".into(),
-                url: "v60.0/limits".into(),
+                url: "v66.0/limits".into(),
                 rich_input: None,
             }],
             halt_on_error: Some(true),
@@ -702,12 +702,12 @@ mod tests {
 
         let body_without_halt = json!({
             "batchRequests": [
-                {"method": "GET", "url": "v60.0/limits"}
+                {"method": "GET", "url": "v66.0/limits"}
             ]
         });
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite/batch"))
+            .and(path("/services/data/v66.0/composite/batch"))
             .and(body_json(body_without_halt))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "hasErrors": false,
@@ -720,7 +720,7 @@ mod tests {
         let req = BatchRequest {
             batch_requests: vec![BatchSubrequest {
                 method: "GET".into(),
-                url: "v60.0/limits".into(),
+                url: "v66.0/limits".into(),
                 rich_input: None,
             }],
             halt_on_error: None,
@@ -735,7 +735,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite/batch"))
+            .and(path("/services/data/v66.0/composite/batch"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "hasErrors": true,
                 "results": [
@@ -787,7 +787,7 @@ mod tests {
         });
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite/tree/Account"))
+            .and(path("/services/data/v66.0/composite/tree/Account"))
             .and(header("authorization", "Bearer tok"))
             .and(body_json(request_body.clone()))
             .respond_with(ResponseTemplate::new(201).set_body_json(json!({
@@ -818,7 +818,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite/tree/Account"))
+            .and(path("/services/data/v66.0/composite/tree/Account"))
             .respond_with(ResponseTemplate::new(201).set_body_json(json!({
                 "hasErrors": true,
                 "results": [{
@@ -856,7 +856,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite/tree/My_Custom__c"))
+            .and(path("/services/data/v66.0/composite/tree/My_Custom__c"))
             .respond_with(ResponseTemplate::new(201).set_body_json(json!({
                 "hasErrors": false,
                 "results": []
@@ -880,7 +880,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite/tree/Account"))
+            .and(path("/services/data/v66.0/composite/tree/Account"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!([{
                 "message": "Invalid request: missing 'records'",
                 "errorCode": "INVALID_REQUEST"
@@ -912,7 +912,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite/batch"))
+            .and(path("/services/data/v66.0/composite/batch"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!([{
                 "message": "Invalid HTTP method: BOGUS",
                 "errorCode": "JSON_PARSER_ERROR"
@@ -923,7 +923,7 @@ mod tests {
         let sf = fixture(server.uri());
         let err = sf
             .composite()
-            .batch(&json!({"batchRequests": [{"method": "BOGUS", "url": "v60.0/limits"}]}))
+            .batch(&json!({"batchRequests": [{"method": "BOGUS", "url": "v66.0/limits"}]}))
             .await
             .unwrap_err();
         match err {
@@ -943,13 +943,13 @@ mod tests {
             "compositeRequest": [
                 {
                     "method": "POST",
-                    "url": "/services/data/v60.0/sobjects/Account",
+                    "url": "/services/data/v66.0/sobjects/Account",
                     "referenceId": "NewAccount",
                     "body": {"Name": "Acme"}
                 },
                 {
                     "method": "POST",
-                    "url": "/services/data/v60.0/sobjects/Contact",
+                    "url": "/services/data/v66.0/sobjects/Contact",
                     "referenceId": "NewContact",
                     "body": {"AccountId": "@{NewAccount.id}", "LastName": "Doe"}
                 }
@@ -957,20 +957,20 @@ mod tests {
         });
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite"))
+            .and(path("/services/data/v66.0/composite"))
             .and(header("authorization", "Bearer tok"))
             .and(body_json(request_body.clone()))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "compositeResponse": [
                     {
                         "body": {"id": "001xx", "success": true, "errors": []},
-                        "httpHeaders": {"Location": "/services/data/v60.0/sobjects/Account/001xx"},
+                        "httpHeaders": {"Location": "/services/data/v66.0/sobjects/Account/001xx"},
                         "httpStatusCode": 201,
                         "referenceId": "NewAccount"
                     },
                     {
                         "body": {"id": "003yy", "success": true, "errors": []},
-                        "httpHeaders": {"Location": "/services/data/v60.0/sobjects/Contact/003yy"},
+                        "httpHeaders": {"Location": "/services/data/v66.0/sobjects/Contact/003yy"},
                         "httpStatusCode": 201,
                         "referenceId": "NewContact"
                     }
@@ -990,7 +990,7 @@ mod tests {
                 .http_headers
                 .get("Location")
                 .and_then(|v| v.to_str().ok()),
-            Some("/services/data/v60.0/sobjects/Account/001xx")
+            Some("/services/data/v66.0/sobjects/Account/001xx")
         );
     }
 
@@ -1003,7 +1003,7 @@ mod tests {
         let expected_body = json!({
             "compositeRequest": [{
                 "method": "POST",
-                "url": "/services/data/v60.0/sobjects/Account",
+                "url": "/services/data/v66.0/sobjects/Account",
                 "referenceId": "refAccount",
                 "body": {"Name": "Sample Account"}
             }],
@@ -1011,7 +1011,7 @@ mod tests {
         });
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite"))
+            .and(path("/services/data/v66.0/composite"))
             .and(body_json(expected_body))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "compositeResponse": []
@@ -1023,7 +1023,7 @@ mod tests {
         let req = CompositeRequest {
             composite_request: vec![CompositeSubrequest {
                 method: "POST".into(),
-                url: "/services/data/v60.0/sobjects/Account".into(),
+                url: "/services/data/v66.0/sobjects/Account".into(),
                 reference_id: "refAccount".into(),
                 body: Some(json!({"Name": "Sample Account"})),
                 http_headers: None,
@@ -1043,13 +1043,13 @@ mod tests {
         let expected_body = json!({
             "compositeRequest": [{
                 "method": "GET",
-                "url": "/services/data/v60.0/limits",
+                "url": "/services/data/v66.0/limits",
                 "referenceId": "L"
             }]
         });
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite"))
+            .and(path("/services/data/v66.0/composite"))
             .and(body_json(expected_body))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "compositeResponse": []
@@ -1061,7 +1061,7 @@ mod tests {
         let req = CompositeRequest {
             composite_request: vec![CompositeSubrequest {
                 method: "GET".into(),
-                url: "/services/data/v60.0/limits".into(),
+                url: "/services/data/v66.0/limits".into(),
                 reference_id: "L".into(),
                 body: None,
                 http_headers: None,
@@ -1080,7 +1080,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite"))
+            .and(path("/services/data/v66.0/composite"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "compositeResponse": [
                     {
@@ -1122,7 +1122,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite"))
+            .and(path("/services/data/v66.0/composite"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!([{
                 "message": "Duplicate referenceId: ref1",
                 "errorCode": "INVALID_INPUT"
@@ -1158,7 +1158,7 @@ mod tests {
         });
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite/sobjects"))
+            .and(path("/services/data/v66.0/composite/sobjects"))
             .and(header("authorization", "Bearer tok"))
             .and(body_json(request_body.clone()))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([
@@ -1187,7 +1187,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("PATCH"))
-            .and(path("/services/data/v60.0/composite/sobjects"))
+            .and(path("/services/data/v66.0/composite/sobjects"))
             .and(body_json(json!({
                 "allOrNone": true,
                 "records": [
@@ -1222,7 +1222,7 @@ mod tests {
 
         Mock::given(method("PATCH"))
             .and(path(
-                "/services/data/v60.0/composite/sobjects/Account/External_Id__c",
+                "/services/data/v66.0/composite/sobjects/Account/External_Id__c",
             ))
             .and(body_json(json!({
                 "allOrNone": false,
@@ -1272,7 +1272,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("DELETE"))
-            .and(path("/services/data/v60.0/composite/sobjects"))
+            .and(path("/services/data/v66.0/composite/sobjects"))
             .and(wiremock::matchers::query_param("ids", "001xx,001yy"))
             .and(wiremock::matchers::query_param("allOrNone", "false"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([
@@ -1300,7 +1300,7 @@ mod tests {
         // Salesforce surfaces missing records as `null` at the corresponding
         // index — preserving 1:1 alignment with the input ids.
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/composite/sobjects/Account"))
+            .and(path("/services/data/v66.0/composite/sobjects/Account"))
             .and(wiremock::matchers::query_param(
                 "ids",
                 "001xx,missing,001yy",
@@ -1339,7 +1339,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/composite/sobjects/Account"))
+            .and(path("/services/data/v66.0/composite/sobjects/Account"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([
                 {"attributes": {"type": "Account"}, "Id": "001xx"},
                 null
@@ -1364,7 +1364,7 @@ mod tests {
         // the high-cardinality (>800 ids) variant of retrieve.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite/sobjects/Account"))
+            .and(path("/services/data/v66.0/composite/sobjects/Account"))
             .and(body_json(json!({
                 "ids": ["001xx", "missing"],
                 "fields": ["Id", "Name"]
@@ -1394,7 +1394,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/composite/sobjects"))
+            .and(path("/services/data/v66.0/composite/sobjects"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([
                 {"id": "001xx", "success": true, "errors": []},
                 {"success": false, "errors": [{

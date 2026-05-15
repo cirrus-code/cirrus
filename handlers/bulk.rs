@@ -446,7 +446,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/jobs/ingest"))
+            .and(path("/services/data/v66.0/jobs/ingest"))
             .and(header("authorization", "Bearer tok"))
             .and(body_json(json!({
                 "object": "Account",
@@ -481,7 +481,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/jobs/ingest"))
+            .and(path("/services/data/v66.0/jobs/ingest"))
             .and(body_json(json!({
                 "object": "Account",
                 "operation": "upsert",
@@ -515,7 +515,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("PUT"))
-            .and(path("/services/data/v60.0/jobs/ingest/750xx/batches"))
+            .and(path("/services/data/v66.0/jobs/ingest/750xx/batches"))
             .and(header("content-type", "text/csv"))
             .and(header("authorization", "Bearer tok"))
             .respond_with(ResponseTemplate::new(201))
@@ -532,7 +532,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("PATCH"))
-            .and(path("/services/data/v60.0/jobs/ingest/750xx"))
+            .and(path("/services/data/v66.0/jobs/ingest/750xx"))
             .and(body_json(json!({"state": "UploadComplete"})))
             .respond_with(
                 ResponseTemplate::new(200)
@@ -551,7 +551,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("PATCH"))
-            .and(path("/services/data/v60.0/jobs/ingest/750xx"))
+            .and(path("/services/data/v66.0/jobs/ingest/750xx"))
             .and(body_json(json!({"state": "Aborted"})))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(ingest_job_response("750xx", "Aborted")),
@@ -574,7 +574,7 @@ mod tests {
         completed["totalProcessingTime"] = json!(2349);
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/jobs/ingest/750xx"))
+            .and(path("/services/data/v66.0/jobs/ingest/750xx"))
             .respond_with(ResponseTemplate::new(200).set_body_json(completed))
             .mount(&server)
             .await;
@@ -591,7 +591,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("DELETE"))
-            .and(path("/services/data/v60.0/jobs/ingest/750xx"))
+            .and(path("/services/data/v66.0/jobs/ingest/750xx"))
             .respond_with(ResponseTemplate::new(204))
             .mount(&server)
             .await;
@@ -607,7 +607,7 @@ mod tests {
         let csv = "sf__Id,sf__Created,Name\n001xx,true,Acme\n";
         Mock::given(method("GET"))
             .and(path(
-                "/services/data/v60.0/jobs/ingest/750xx/successfulResults",
+                "/services/data/v66.0/jobs/ingest/750xx/successfulResults",
             ))
             .and(header("accept", "text/csv"))
             .respond_with(
@@ -634,7 +634,7 @@ mod tests {
 
         let csv = "sf__Id,sf__Error,Name\n,REQUIRED_FIELD_MISSING:Name,\n";
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/jobs/ingest/750xx/failedResults"))
+            .and(path("/services/data/v66.0/jobs/ingest/750xx/failedResults"))
             .respond_with(ResponseTemplate::new(200).set_body_string(csv))
             .mount(&server)
             .await;
@@ -651,7 +651,7 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path(
-                "/services/data/v60.0/jobs/ingest/missing/successfulResults",
+                "/services/data/v66.0/jobs/ingest/missing/successfulResults",
             ))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!([{
                 "message": "InvalidJob: Bulk API job missing not found",
@@ -703,7 +703,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/jobs/query"))
+            .and(path("/services/data/v66.0/jobs/query"))
             .and(body_json(json!({
                 "query": "SELECT Id, Name FROM Account",
                 "operation": "query"
@@ -736,7 +736,7 @@ mod tests {
 
         let csv = "Id,Name\n001xx,Acme\n";
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/jobs/query/750xx/results"))
+            .and(path("/services/data/v66.0/jobs/query/750xx/results"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_string(csv)
@@ -765,7 +765,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/jobs/query/750xx/results"))
+            .and(path("/services/data/v66.0/jobs/query/750xx/results"))
             .and(query_param("locator", "MTAwMA"))
             .respond_with(
                 ResponseTemplate::new(200)
@@ -792,7 +792,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/jobs/query/750xx/results"))
+            .and(path("/services/data/v66.0/jobs/query/750xx/results"))
             .and(query_param("maxRecords", "10000"))
             .respond_with(ResponseTemplate::new(200).set_body_string("Id\n"))
             .mount(&server)
@@ -811,7 +811,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("PATCH"))
-            .and(path("/services/data/v60.0/jobs/query/750xx"))
+            .and(path("/services/data/v66.0/jobs/query/750xx"))
             .and(body_json(json!({"state": "Aborted"})))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(query_job_response("750xx", "Aborted")),

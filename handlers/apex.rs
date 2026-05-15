@@ -164,7 +164,7 @@ mod tests {
     async fn apex_get_targets_apexrest_path_without_version() {
         let server = MockServer::start().await;
 
-        // Note the URL: NO /services/data/v60.0/ prefix. Apex REST lives
+        // Note the URL: NO /services/data/v66.0/ prefix. Apex REST lives
         // outside the versioned tree.
         Mock::given(method("GET"))
             .and(path("/services/apexrest/MyEndpoint"))

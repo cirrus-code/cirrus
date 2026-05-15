@@ -472,7 +472,7 @@ pub struct EventLogFileRecord {
 pub struct ApiVersion {
     /// Human-readable label, e.g. `"Winter '24"`.
     pub label: String,
-    /// URL prefix for endpoints in this version, e.g. `"/services/data/v60.0"`.
+    /// URL prefix for endpoints in this version, e.g. `"/services/data/v66.0"`.
     pub url: String,
     /// Numeric version string, e.g. `"60.0"`.
     pub version: String,
@@ -824,7 +824,7 @@ mod tests {
         let body = json!({
             "totalSize": 1500,
             "done": false,
-            "nextRecordsUrl": "/services/data/v60.0/query/01g...-2000",
+            "nextRecordsUrl": "/services/data/v66.0/query/01g...-2000",
             "records": []
         })
         .to_string();
@@ -832,7 +832,7 @@ mod tests {
         assert!(!qr.done);
         assert_eq!(
             qr.next_records_url.as_deref(),
-            Some("/services/data/v60.0/query/01g...-2000")
+            Some("/services/data/v66.0/query/01g...-2000")
         );
     }
 
@@ -960,9 +960,9 @@ mod tests {
                 "undeletable": true,
                 "updateable": true,
                 "urls": {
-                    "sobject": "/services/data/v60.0/sobjects/Account",
-                    "describe": "/services/data/v60.0/sobjects/Account/describe",
-                    "rowTemplate": "/services/data/v60.0/sobjects/Account/{ID}"
+                    "sobject": "/services/data/v66.0/sobjects/Account",
+                    "describe": "/services/data/v66.0/sobjects/Account/describe",
+                    "rowTemplate": "/services/data/v66.0/sobjects/Account/{ID}"
                 }
             }]
         })
@@ -975,7 +975,7 @@ mod tests {
         assert_eq!(dg.sobjects[0].key_prefix.as_deref(), Some("001"));
         assert_eq!(
             dg.sobjects[0].urls.get("describe").map(String::as_str),
-            Some("/services/data/v60.0/sobjects/Account/describe")
+            Some("/services/data/v66.0/sobjects/Account/describe")
         );
     }
 
@@ -1007,14 +1007,14 @@ mod tests {
                 {
                     "attributes": {
                         "type": "Account",
-                        "url": "/services/data/v60.0/sobjects/Account/001xx"
+                        "url": "/services/data/v66.0/sobjects/Account/001xx"
                     },
                     "Id": "001xx"
                 },
                 {
                     "attributes": {
                         "type": "Contact",
-                        "url": "/services/data/v60.0/sobjects/Contact/003yy"
+                        "url": "/services/data/v66.0/sobjects/Contact/003yy"
                     },
                     "Id": "003yy"
                 }
@@ -1128,7 +1128,7 @@ mod tests {
             "concurrencyMode": "Parallel",
             "contentType": "CSV",
             "apiVersion": 60.0,
-            "contentUrl": "/services/data/v60.0/jobs/ingest/750xx0000004C92AAE/batches",
+            "contentUrl": "/services/data/v66.0/jobs/ingest/750xx0000004C92AAE/batches",
             "lineEnding": "LF",
             "columnDelimiter": "COMMA",
             "jobType": "V2Ingest"
@@ -1312,7 +1312,7 @@ mod tests {
             "compositeResponse": [
                 {
                     "body": {"id": "001RM000003oCprYAE", "success": true, "errors": []},
-                    "httpHeaders": {"Location": "/services/data/v60.0/sobjects/Account/001RM000003oCprYAE"},
+                    "httpHeaders": {"Location": "/services/data/v66.0/sobjects/Account/001RM000003oCprYAE"},
                     "httpStatusCode": 201,
                     "referenceId": "NewAccount"
                 },
@@ -1340,7 +1340,7 @@ mod tests {
                 .http_headers
                 .get("Location")
                 .and_then(|v| v.to_str().ok()),
-            Some("/services/data/v60.0/sobjects/Account/001RM000003oCprYAE")
+            Some("/services/data/v66.0/sobjects/Account/001RM000003oCprYAE")
         );
         assert_eq!(resp.composite_response[1].body["Name"], "Acme");
         assert!(resp.composite_response[2].body.is_null());
@@ -1354,7 +1354,7 @@ mod tests {
         let body = json!({
             "compositeResponse": [{
                 "body": {"id": "001xx", "success": true, "errors": []},
-                "httpHeaders": {"Location": "/services/data/v60.0/sobjects/Account/001xx"},
+                "httpHeaders": {"Location": "/services/data/v66.0/sobjects/Account/001xx"},
                 "httpStatusCode": 201,
                 "referenceId": "x"
             }]
@@ -1368,7 +1368,7 @@ mod tests {
         assert!(headers.get("LOCATION").is_some());
         assert_eq!(
             headers.get("location").and_then(|v| v.to_str().ok()),
-            Some("/services/data/v60.0/sobjects/Account/001xx")
+            Some("/services/data/v66.0/sobjects/Account/001xx")
         );
     }
 

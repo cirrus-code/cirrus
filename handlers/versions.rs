@@ -61,7 +61,7 @@ mod tests {
             .and(path("/services/data"))
             .and(header("authorization", "Bearer tok"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-                {"label": "Winter '24", "url": "/services/data/v60.0", "version": "60.0"},
+                {"label": "Winter '24", "url": "/services/data/v66.0", "version": "60.0"},
                 {"label": "Spring '24", "url": "/services/data/v61.0", "version": "61.0"}
             ])))
             .mount(&server)
@@ -165,7 +165,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/services/data"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-                {"label": "Winter '24", "url": "/services/data/v60.0", "version": "60.0"},
+                {"label": "Winter '24", "url": "/services/data/v66.0", "version": "60.0"},
                 {"label": "Spring '26", "url": "/services/data/v66.0", "version": "66.0"},
                 {"label": "Summer '25", "url": "/services/data/v64.0", "version": "64.0"}
             ])))
@@ -187,7 +187,7 @@ mod tests {
             .and(path("/services/data"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
                 {"label": "Spring '26", "url": "/services/data/v66.0", "version": "66.0"},
-                {"label": "Winter '24", "url": "/services/data/v60.0", "version": "60.0"}
+                {"label": "Winter '24", "url": "/services/data/v66.0", "version": "60.0"}
             ])))
             .mount(&server)
             .await;

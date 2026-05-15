@@ -343,7 +343,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/tooling/sobjects"))
+            .and(path("/services/data/v66.0/tooling/sobjects"))
             .and(header("authorization", "Bearer tok"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "encoding": "UTF-8",
@@ -358,9 +358,9 @@ mod tests {
                     "retrieveable": true, "searchable": false, "triggerable": false,
                     "undeletable": false, "updateable": true,
                     "urls": {
-                        "sobject": "/services/data/v60.0/tooling/sobjects/ApexClass",
-                        "describe": "/services/data/v60.0/tooling/sobjects/ApexClass/describe",
-                        "rowTemplate": "/services/data/v60.0/tooling/sobjects/ApexClass/{ID}"
+                        "sobject": "/services/data/v66.0/tooling/sobjects/ApexClass",
+                        "describe": "/services/data/v66.0/tooling/sobjects/ApexClass/describe",
+                        "rowTemplate": "/services/data/v66.0/tooling/sobjects/ApexClass/{ID}"
                     }
                 }]
             })))
@@ -379,7 +379,7 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path(
-                "/services/data/v60.0/tooling/sobjects/ApexClass/describe",
+                "/services/data/v66.0/tooling/sobjects/ApexClass/describe",
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "name": "ApexClass",
@@ -400,7 +400,7 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path(
-                "/services/data/v60.0/tooling/sobjects/ApexClass/01p000000000001",
+                "/services/data/v66.0/tooling/sobjects/ApexClass/01p000000000001",
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "Id": "01p000000000001",
@@ -426,7 +426,7 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path(
-                "/services/data/v60.0/tooling/sobjects/ApexClass/01p000000000001",
+                "/services/data/v66.0/tooling/sobjects/ApexClass/01p000000000001",
             ))
             .and(query_param("fields", "Id,Name,Body"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -452,7 +452,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/services/data/v60.0/tooling/sobjects/ApexClass"))
+            .and(path("/services/data/v66.0/tooling/sobjects/ApexClass"))
             .and(body_json(json!({
                 "Name": "Hello",
                 "Body": "public class Hello {}"
@@ -485,7 +485,7 @@ mod tests {
 
         Mock::given(method("PATCH"))
             .and(path(
-                "/services/data/v60.0/tooling/sobjects/ApexClass/01p000000000001",
+                "/services/data/v66.0/tooling/sobjects/ApexClass/01p000000000001",
             ))
             .and(body_json(
                 json!({"Body": "public class MyClass { /* v2 */ }"}),
@@ -511,7 +511,7 @@ mod tests {
 
         Mock::given(method("DELETE"))
             .and(path(
-                "/services/data/v60.0/tooling/sobjects/ApexClass/01p000000000001",
+                "/services/data/v66.0/tooling/sobjects/ApexClass/01p000000000001",
             ))
             .respond_with(ResponseTemplate::new(204))
             .mount(&server)
@@ -530,7 +530,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/tooling/query"))
+            .and(path("/services/data/v66.0/tooling/query"))
             .and(query_param("q", "SELECT Id, Name FROM ApexClass"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 1,
@@ -562,7 +562,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/tooling/query"))
+            .and(path("/services/data/v66.0/tooling/query"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "totalSize": 1,
                 "done": true,
@@ -587,7 +587,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/tooling/search"))
+            .and(path("/services/data/v66.0/tooling/search"))
             .and(query_param(
                 "q",
                 "FIND {MyClass} IN ALL FIELDS RETURNING ApexClass(Id, Name)",
@@ -620,7 +620,7 @@ mod tests {
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/tooling/search"))
+            .and(path("/services/data/v66.0/tooling/search"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "searchRecords": [
                     {"attributes": {"type": "ApexClass"}, "Id": "01p000000000001"}
@@ -643,7 +643,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/tooling/executeAnonymous"))
+            .and(path("/services/data/v66.0/tooling/executeAnonymous"))
             .and(query_param("anonymousBody", "System.debug('hello world');"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "compiled": true,
@@ -676,7 +676,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/tooling/executeAnonymous"))
+            .and(path("/services/data/v66.0/tooling/executeAnonymous"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "compiled": false,
                 "compileProblem": "Variable does not exist: foo",
@@ -706,7 +706,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/tooling/executeAnonymous"))
+            .and(path("/services/data/v66.0/tooling/executeAnonymous"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "compiled": true,
                 "compileProblem": null,
@@ -744,7 +744,7 @@ mod tests {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
-            .and(path("/services/data/v60.0/tooling/query"))
+            .and(path("/services/data/v66.0/tooling/query"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!([{
                 "message": "unexpected token: SELECTT",
                 "errorCode": "MALFORMED_QUERY"

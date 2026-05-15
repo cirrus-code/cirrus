@@ -59,7 +59,7 @@ pub use web_server::{CompletedSession, PendingExchange, WebServerFlow, WebServer
 /// produces a bearer access token on demand (refreshing if necessary), and
 /// reports the instance URL that REST requests should target.
 ///
-/// The trait is `Send + Sync` and uses [`async_trait`] to remain
+/// The trait is `Send + Sync` and uses [`async_trait`](mod@async_trait) to remain
 /// `dyn`-compatible — the client stores `Arc<dyn AuthSession>` so handlers
 /// don't care which flow was configured.
 #[async_trait]

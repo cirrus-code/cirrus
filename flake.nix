@@ -60,6 +60,7 @@
             rust-analyzer
             cargo-nextest
             cargo-release
+            cargo-deny
           ];
         };
       };

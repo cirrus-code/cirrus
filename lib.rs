@@ -87,6 +87,18 @@ pub(crate) const DEFAULT_USER_AGENT: &str = concat!(
 ///
 /// Holds the underlying HTTP client, an [`AuthSession`] for credentials, and
 /// the API version to use. Cheap to clone.
+///
+/// # Path resolution
+///
+/// Every public verb method ([`Self::get`], [`Self::post`], etc.) and
+/// [`Self::request_builder`] accepts a `path` argument resolved with
+/// three-mode semantics:
+///
+/// - **Fully-qualified** (`http://…` or `https://…`): used as-is.
+/// - **Instance-rooted** (leading `/`): resolved against the instance URL,
+///   e.g. `/services/data` → `{instance}/services/data`.
+/// - **Versioned** (anything else): prefixed with `/services/data/{version}/`,
+///   e.g. `limits` → `{instance}/services/data/{version}/limits`.
 #[derive(Clone)]
 pub struct Cirrus {
     client: reqwest::Client,
@@ -247,7 +259,7 @@ impl Cirrus {
 
     /// GET an arbitrary Salesforce path, deserializing the response into `R`.
     ///
-    /// Path resolution follows [`Cirrus::resolve_url`]'s three-mode
+    /// Path resolution follows [`Cirrus`]'s three-mode
     /// semantics. Use this as the open-ended client escape hatch when no
     /// typed builder exists for the resource you need.
     pub async fn get<R: DeserializeOwned>(&self, path: &str) -> CirrusResult<R> {
@@ -333,7 +345,7 @@ impl Cirrus {
 
     /// Returns a pre-authenticated [`reqwest::RequestBuilder`] targeting
     /// the resolved URL. Path resolution follows
-    /// [`Cirrus::resolve_url`]'s three-mode semantics; the bearer
+    /// [`Cirrus`]'s three-mode semantics; the bearer
     /// token is injected via [`AuthSession::access_token`]. The caller is
     /// then free to add headers, configure timeouts, set a custom body
     /// (multipart, form, raw bytes), and `.send()` the request.
@@ -464,7 +476,7 @@ impl Cirrus {
     ///
     /// Used by Bulk 2.0 ingest uploads — the request body is `text/csv`, the
     /// response is the standard JSON job envelope. Path resolution still
-    /// follows [`Cirrus::resolve_url`]'s three-mode semantics.
+    /// follows [`Cirrus`]'s three-mode semantics.
     pub(crate) async fn send_with_body<R>(
         &self,
         method: reqwest::Method,
@@ -556,7 +568,7 @@ impl Cirrus {
     /// the form itself isn't Clone, but the underlying `Vec<u8>` JSON
     /// and `bytes::Bytes` blob are cheap to clone.
     ///
-    /// Path resolution follows [`Cirrus::resolve_url`]'s three-mode
+    /// Path resolution follows [`Cirrus`]'s three-mode
     /// semantics. Goes through the same retry + auth-refresh +
     /// `Sforce-Limit-Info` capture as the other send methods.
     // Internal transport helper: the public surface
@@ -677,7 +689,7 @@ impl Cirrus {
     /// Used by Bulk 2.0 result downloads — the response body is `text/csv`
     /// and the caller may need response headers for cursor pagination
     /// (`Sforce-Locator`, `Sforce-NumberOfRecords`). Path resolution still
-    /// follows [`Cirrus::resolve_url`]'s three-mode semantics.
+    /// follows [`Cirrus`]'s three-mode semantics.
     pub(crate) async fn fetch_raw(
         &self,
         method: reqwest::Method,

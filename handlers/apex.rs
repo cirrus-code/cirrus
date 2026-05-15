@@ -117,8 +117,8 @@ impl ApexHandler<'_> {
 /// - `"/MyEndpoint"` → `"/services/apexrest/MyEndpoint"`
 /// - `"MyEndpoint/sub/123"` → `"/services/apexrest/MyEndpoint/sub/123"`
 ///
-/// The leading `/` triggers [`Cirrus::resolve_url`]'s instance-rooted
-/// branch, bypassing the versioned `/services/data/{version}/` prefix.
+/// The leading `/` triggers [`crate::Cirrus`]'s instance-rooted branch,
+/// bypassing the versioned `/services/data/{version}/` prefix.
 fn apex_path(path: &str) -> String {
     format!("/services/apexrest/{}", path.trim_start_matches('/'))
 }

@@ -1,62 +1,48 @@
-[package]
-name = "cirrus"
-version = "0.1.0"
+[workspace]
+resolver = "3"
+members = ["crates/cirrus"]
+
+[workspace.package]
 edition = "2024"
-description = "An ergonomic Rust HTTP client for the Salesforce REST API."
 license = "MIT"
 authors = ["Ryan Faulhaber <ryf@sent.as>"]
-keywords = ["salesforce", "api", "client", "sdk", "rest"]
-categories = ["api-bindings", "web-programming::http-client"]
-readme = "README.md"
 repository = "https://github.com/cirrus-code/cirrus"
 homepage = "https://github.com/cirrus-code/cirrus"
-documentation = "https://docs.rs/cirrus"
-exclude = [
-    "/.github/",
-    "/.envrc",
-    "/.env.example",
-    "/.gitignore",
-    "/CLAUDE.md",
-    "/clippy.toml",
-    "/deny.toml",
-    "/flake.lock",
-    "/flake.nix",
-    "/rust-toolchain.toml",
-    "/tests/integration",
-    "/tests/integration.rs",
-]
 
-[lib]
-path = "lib.rs"
-
-[dependencies]
-async-trait = "0.1"
-base64 = "0.22"
+[workspace.dependencies]
+# Runtime / HTTP
+reqwest = { version = "0.13", default-features = false, features = ["form", "json", "multipart", "query", "rustls", "charset", "system-proxy"] }
+tokio = { version = "1.52", features = ["sync", "time"] }
+url = "2.5"
 bytes = "1.11"
-camino = "1.2"
-fs-err = "3.3"
-futures = { version = "0.3", default-features = false, features = ["std"] }
-getrandom = "0.4"
 http-serde = "2.1.1"
 httpdate = "1"
-jsonwebtoken = { version = "10.3", default-features = false, features = ["use_pem", "aws_lc_rs"] }
-reqwest = { version = "0.13", default-features = false, features = ["form", "json", "multipart", "query", "rustls", "charset", "system-proxy"] }
+
+# Serde stack
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_urlencoded = "0.7"
-sha2 = "0.11"
-thiserror = "2.0"
-tokio = { version = "1.52", features = ["sync", "time"] }
-tracing = { version = "0.1", default-features = false, features = ["std"] }
-url = "2.5"
 
-[dev-dependencies]
+# Errors / async / utility
+thiserror = "2.0"
+async-trait = "0.1"
+futures = { version = "0.3", default-features = false, features = ["std"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+camino = "1.2"
+fs-err = "3.3"
+getrandom = "0.4"
+base64 = "0.22"
+sha2 = "0.11"
+
+# Auth
+jsonwebtoken = { version = "10.3", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+
+# Dev-only
 dotenvy = "0.15"
 proptest = "1.6"
-tokio = { version = "1.52", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
 
-[lints.clippy]
+[workspace.lints.clippy]
 await_holding_invalid_type = "deny"
 await_holding_lock = "deny"
 await_holding_refcell_ref = "deny"
@@ -70,15 +56,3 @@ unimplemented = "deny"
 dbg_macro = "deny"
 print_stdout = "deny"
 print_stderr = "deny"
-
-[package.metadata.release]
-allow-branch = ["main"]
-sign-commit = true
-sign-tag = true
-push-remote = "origin"
-tag-prefix = "v"
-tag-name = "{{prefix}}{{version}}"
-publish = true
-pre-release-replacements = [
-    { file = "README.md", search = "cirrus = \"[^\"]+\"", replace = "cirrus = \"{{version}}\"", min = 1 },
-]

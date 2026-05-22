@@ -359,7 +359,7 @@ mod tests {
 
     /// Throwaway test-only RSA private key. No security value.
     /// See `tests/fixtures/test_rsa_key.pem`.
-    const TEST_PEM: &[u8] = include_bytes!("../tests/fixtures/test_rsa_key.pem");
+    const TEST_PEM: &[u8] = include_bytes!("../../tests/fixtures/test_rsa_key.pem");
 
     fn builder_with_required_fields() -> JwtAuthBuilder {
         JwtAuth::builder()

@@ -41,10 +41,10 @@ If you find yourself wanting a fifth, first check whether the existing four woul
 
 ### Handler module conventions
 
-- One module per platform-level surface: `handlers/{sobjects, query, search, composite, bulk, tooling, apex, event_monitoring, limits, versions}.rs`.
+- One module per platform-level surface: `crates/cirrus/src/handlers/{sobjects, query, search, composite, bulk, tooling, apex, event_monitoring, limits, versions}.rs`.
 - Handler struct holds `&'a Cirrus`; constructed via top-level methods on `Cirrus` (e.g., `sf.tooling()`, `sf.bulk().query()`, `sf.sobject("Account")`).
 - Methods that return records expose two variants: the default (returns `serde_json::Value`) and `_as::<R>` for typed deserialization.
-- **Never** model org-specific types. Platform envelopes (response shapes Salesforce defines) live in `response.rs` and are re-exported at the crate root; record types are caller-supplied via the generic `R: DeserializeOwned`.
+- **Never** model org-specific types. Platform envelopes (response shapes Salesforce defines) live in `crates/cirrus/src/response.rs` and are re-exported at the crate root; record types are caller-supplied via the generic `R: DeserializeOwned`.
 - Pagination support: handlers with paginated GETs add `_stream` / `_stream_as` variants returning `pagination::Records<R>` (a `futures::Stream`). See `query`/`tooling.query` for the pattern.
 
 ## Test conventions
@@ -52,11 +52,11 @@ If you find yourself wanting a fifth, first check whether the existing four woul
 - Wiremock for handler tests; full suite runs in ~0.5s wall time. **No live network in tests.**
 - Mock JSON fixtures should cite specific doc pages. When an audit found `BulkQueryJob.query` was a bogus field (Salesforce never returns it), the fix was to stop matching the mock to our wrong assumption and start matching the doc's actual example. Doc-driven > prior-knowledge.
 - Each new handler ships with wiremock coverage of: happy path, error array, edge cases documented in the wire shape (partial-success semantics, header cursors, etc.).
-- If you can't verify a wire-shape claim against docs, flag it explicitly in code — see `ExecuteAnonymousResult` in `response.rs` for the established pattern ("Wire-shape provenance" docstring).
+- If you can't verify a wire-shape claim against docs, flag it explicitly in code — see `ExecuteAnonymousResult` in `crates/cirrus/src/response.rs` for the established pattern ("Wire-shape provenance" docstring).
 
 ### Integration tests
 
-Live tests against a real Salesforce sandbox / dev / scratch org live under `tests/integration.rs` (one binary, submodules under `tests/integration/`). All `#[ignore]`-gated so they don't run by default.
+Live tests against a real Salesforce sandbox / dev / scratch org live under `crates/cirrus/tests/integration.rs` (one binary, submodules under `crates/cirrus/tests/integration/`). All `#[ignore]`-gated so they don't run by default.
 
 ```bash
 # Configure once: copy .env.example to .env, fill in the values
@@ -66,7 +66,7 @@ cp .env.example .env
 cargo nextest run --test integration --run-ignored only -- --test-threads=1
 ```
 
-The harness (`tests/integration/common.rs`) refuses to run unless `INSTANCE_URL` matches a known sandbox/dev/scratch My Domain pattern: `.sandbox.`, `.develop.`, `.scratch.`, or `.trailblaze.` infix before `.my.salesforce.com`. The `.trailblaze.` partition is used by free Developer Edition orgs from developer.salesforce.com signup (subdomain ends in `-dev-ed`). Override with `CIRRUS_INTEGRATION_FORCE=1` only after verifying the target org is safe for destructive writes — the safe-list catches Enhanced Domains URLs but not legacy pre-Spring-'23 sandbox URLs, and Salesforce occasionally introduces new partition infixes (audit when adding orgs in unfamiliar shapes).
+The harness (`crates/cirrus/tests/integration/common.rs`) refuses to run unless `INSTANCE_URL` matches a known sandbox/dev/scratch My Domain pattern: `.sandbox.`, `.develop.`, `.scratch.`, or `.trailblaze.` infix before `.my.salesforce.com`. The `.trailblaze.` partition is used by free Developer Edition orgs from developer.salesforce.com signup (subdomain ends in `-dev-ed`). Override with `CIRRUS_INTEGRATION_FORCE=1` only after verifying the target org is safe for destructive writes — the safe-list catches Enhanced Domains URLs but not legacy pre-Spring-'23 sandbox URLs, and Salesforce occasionally introduces new partition infixes (audit when adding orgs in unfamiliar shapes).
 
 Auth supports two paths: paste a static token from `sf org display`, or configure JWT bearer flow with a connected app + private key. Static-token mode is the easy bootstrap; JWT exercises the full auth flow.
 
@@ -82,14 +82,22 @@ Persistent notes the user has flagged for future sessions live in `~/.claude/pro
 
 ## Repository Layout
 
-This crate uses a **non-standard layout** — `lib.rs` lives at the repository root, not under `src/`. `Cargo.toml` wires this up explicitly:
+This is a **Cargo workspace**. The repo root holds workspace-level config (`Cargo.toml` workspace manifest, `clippy.toml`, `deny.toml`, `flake.nix`, `rust-toolchain.toml`, cross-crate `docs/` and `scripts/`). Each member crate lives under `crates/<name>/` with the standard `src/lib.rs` layout.
 
-```toml
-[lib]
-path = "lib.rs"
+```
+cirrus/
+├── Cargo.toml                  # [workspace] manifest, [workspace.dependencies], [workspace.lints]
+├── clippy.toml, deny.toml      # apply to all workspace members
+├── docs/, scripts/             # cross-crate
+└── crates/
+    └── cirrus/                 # the REST client crate
+        ├── Cargo.toml          # package manifest, inherits via *.workspace = true
+        ├── src/
+        ├── tests/
+        └── examples/
 ```
 
-Don't create a `src/` directory unless you intentionally restructure the crate.
+Shared dependency versions are declared in `[workspace.dependencies]` and inherited per-crate via `dep.workspace = true`. Lint denials live in `[workspace.lints.clippy]` and are activated per-crate via `[lints] workspace = true`. New sibling crates inherit both automatically.
 
 ## Development Environment
 
@@ -99,20 +107,22 @@ Edition is **2024** — code may use features unavailable in older editions.
 
 ## Common Commands
 
+All commands run from the workspace root unless noted.
+
 ```bash
-cargo build                  # Build the crate
-cargo nextest run            # Run tests (preferred — flake provides nextest)
-cargo test                   # Fallback test runner
-cargo nextest run <pattern>  # Run a single test by name substring
-cargo clippy --all-targets   # Lint (CI-equivalent — many rules are `deny`)
-cargo fmt                    # Format
-nix build                    # Reproducible package build via the flake
-cargo release <level>        # Release helper; signs commits/tags, pushes to origin, only from main
+cargo build --workspace                    # Build all member crates
+cargo nextest run --workspace              # Run all tests (preferred — flake provides nextest)
+cargo test --workspace                     # Fallback test runner
+cargo nextest run -p cirrus <pattern>      # Run a single test by name substring in a specific crate
+cargo clippy --all-targets --workspace     # Lint (CI-equivalent — many rules are `deny`)
+cargo fmt --all                            # Format every crate
+nix build                                  # Reproducible package build via the flake
+cargo release -p cirrus <level>            # Release a specific crate; signs commits/tags, pushes to origin, only from main
 ```
 
 ## Coding Constraints (enforced by lints)
 
-`Cargo.toml` sets these clippy lints to `deny` — code that trips them will fail `cargo clippy`:
+The workspace `Cargo.toml` sets these clippy lints to `deny` via `[workspace.lints.clippy]` — every member crate inherits them. Code that trips them will fail `cargo clippy`:
 
 - `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented` — no panicking constructs; propagate errors with `Result`.
 - `dbg_macro`, `print_stdout`, `print_stderr` — no ad-hoc stdout/stderr printing. Use a logging facade (e.g. `tracing`/`log`) when one is added.
@@ -128,7 +138,7 @@ When adding dependencies, prefer `camino` and `fs_err` for any path/IO work — 
 
 ## Release Process
 
-`[package.metadata.release]` is configured for `cargo-release`:
+`[package.metadata.release]` in `crates/cirrus/Cargo.toml` is configured for `cargo-release`:
 
 - Releases only from `main`.
 - Commits and tags are GPG-signed.

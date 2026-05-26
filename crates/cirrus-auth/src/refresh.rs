@@ -10,9 +10,9 @@
 //!
 //! Perform the initial OAuth exchange to obtain a `refresh_token` and
 //! `instance_url`, build a [`RefreshTokenAuth`] with those values, and
-//! hand it to [`Cirrus`](crate::Cirrus). New access tokens are minted on
-//! demand by hitting `/services/oauth2/token` with
-//! `grant_type=refresh_token`.
+//! hand it (wrapped in `Arc<dyn AuthSession>`) to a Cirrus client. New
+//! access tokens are minted on demand by hitting
+//! `/services/oauth2/token` with `grant_type=refresh_token`.
 //!
 //! ## Confidential vs public clients
 //!

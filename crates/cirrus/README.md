@@ -96,6 +96,12 @@ Auto-refresh on 401: when an expired token surfaces, `JwtAuth`,
 retry once with a fresh token, transparently. Compare-and-swap semantics avoid
 clobbering a token a concurrent task just refreshed.
 
+The flows live in the [`cirrus-auth`](../cirrus-auth/) sub-crate and are
+re-exported as `cirrus::auth::*` — `cirrus = "..."` alone is enough; you
+don't need to add `cirrus-auth` to your `Cargo.toml`. Auth errors come
+back as `CirrusError::Auth(cirrus_auth::AuthError)`, so `?` works at the
+boundary between auth and REST without extra plumbing.
+
 ### Cross-cutting
 
 - **Retry + backoff** — `RetryPolicy` covers 429, 503, and transient 5xx with

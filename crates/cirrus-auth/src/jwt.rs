@@ -20,9 +20,9 @@
 //! next call mints a new token regardless of whether the previous one would
 //! still have worked.
 
-use crate::auth::AuthSession;
-use crate::auth::token_endpoint::{check_instance_url, exchange};
-use crate::error::{CirrusError, CirrusResult};
+use crate::AuthSession;
+use crate::error::{AuthError, AuthResult};
+use crate::token_endpoint::{check_instance_url, exchange};
 use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
@@ -98,11 +98,10 @@ impl JwtAuth {
     /// # Example
     ///
     /// ```no_run
-    /// use cirrus::auth::JwtAuth;
-    /// use cirrus::Cirrus;
+    /// use cirrus_auth::JwtAuth;
     /// use std::sync::Arc;
     ///
-    /// # fn example() -> Result<(), cirrus::CirrusError> {
+    /// # fn example() -> Result<(), cirrus_auth::AuthError> {
     /// let auth = JwtAuth::builder()
     ///     .consumer_key("3MVG9...")
     ///     .username("integration-user@example.com")
@@ -110,8 +109,8 @@ impl JwtAuth {
     ///     .instance_url("https://my-org.my.salesforce.com")
     ///     .private_key_pem_file("./private.pem")?
     ///     .build()?;
-    /// let sf = Cirrus::builder().auth(Arc::new(auth)).build()?;
-    /// # let _ = sf;
+    /// // Wrap as Arc<dyn AuthSession> and hand to a Cirrus client.
+    /// let _shared = Arc::new(auth);
     /// # Ok(())
     /// # }
     /// ```
@@ -119,7 +118,7 @@ impl JwtAuth {
         JwtAuthBuilder::default()
     }
 
-    async fn mint_token(&self) -> CirrusResult<CachedToken> {
+    async fn mint_token(&self) -> AuthResult<CachedToken> {
         tracing::info!(
             target: "cirrus::auth",
             flow = "jwt-bearer",
@@ -129,7 +128,7 @@ impl JwtAuth {
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
-            .map_err(|e| CirrusError::Auth(format!("system clock before UNIX epoch: {e}")))?;
+            .map_err(|e| AuthError::Other(format!("system clock before UNIX epoch: {e}")))?;
 
         let claims = JwtClaims {
             iss: self.consumer_key.clone(),
@@ -140,7 +139,7 @@ impl JwtAuth {
 
         let header = Header::new(Algorithm::RS256);
         let assertion = jsonwebtoken::encode(&header, &claims, &self.encoding_key)
-            .map_err(|e| CirrusError::Auth(format!("JWT signing failed: {e}")))?;
+            .map_err(|e| AuthError::Other(format!("JWT signing failed: {e}")))?;
 
         let body = [
             ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
@@ -159,7 +158,7 @@ impl JwtAuth {
 
 #[async_trait]
 impl AuthSession for JwtAuth {
-    async fn access_token(&self) -> CirrusResult<Cow<'_, str>> {
+    async fn access_token(&self) -> AuthResult<Cow<'_, str>> {
         // Fast path — read lock, return clone of cached token if still valid.
         {
             let guard = self.cached.read().await;
@@ -252,23 +251,23 @@ impl JwtAuthBuilder {
     }
 
     /// Loads the RSA private key from a PEM file at the given path.
-    pub fn private_key_pem_file(mut self, path: impl Into<Utf8PathBuf>) -> CirrusResult<Self> {
+    pub fn private_key_pem_file(mut self, path: impl Into<Utf8PathBuf>) -> AuthResult<Self> {
         let path = path.into();
         let bytes = fs_err::read(path.as_std_path())
-            .map_err(|e| CirrusError::Auth(format!("failed to read private key: {e}")))?;
+            .map_err(|e| AuthError::Other(format!("failed to read private key: {e}")))?;
         self.encoding_key = Some(
             EncodingKey::from_rsa_pem(&bytes)
-                .map_err(|e| CirrusError::Auth(format!("invalid RSA PEM key: {e}")))?,
+                .map_err(|e| AuthError::Other(format!("invalid RSA PEM key: {e}")))?,
         );
         Ok(self)
     }
 
     /// Loads the RSA private key directly from PEM-encoded bytes. Useful
     /// when the key is held in memory (e.g. fetched from a secret manager).
-    pub fn private_key_pem_bytes(mut self, bytes: &[u8]) -> CirrusResult<Self> {
+    pub fn private_key_pem_bytes(mut self, bytes: &[u8]) -> AuthResult<Self> {
         self.encoding_key = Some(
             EncodingKey::from_rsa_pem(bytes)
-                .map_err(|e| CirrusError::Auth(format!("invalid RSA PEM key: {e}")))?,
+                .map_err(|e| AuthError::Other(format!("invalid RSA PEM key: {e}")))?,
         );
         Ok(self)
     }
@@ -312,17 +311,17 @@ impl JwtAuthBuilder {
     }
 
     /// Finalizes the builder.
-    pub fn build(self) -> CirrusResult<JwtAuth> {
+    pub fn build(self) -> AuthResult<JwtAuth> {
         let consumer_key = self
             .consumer_key
-            .ok_or(CirrusError::MissingField("consumer_key"))?;
-        let username = self.username.ok_or(CirrusError::MissingField("username"))?;
+            .ok_or(AuthError::MissingField("consumer_key"))?;
+        let username = self.username.ok_or(AuthError::MissingField("username"))?;
         let encoding_key = self
             .encoding_key
-            .ok_or(CirrusError::MissingField("private_key"))?;
+            .ok_or(AuthError::MissingField("private_key"))?;
         let mut instance_url = self
             .instance_url
-            .ok_or(CirrusError::MissingField("instance_url"))?;
+            .ok_or(AuthError::MissingField("instance_url"))?;
         if instance_url.ends_with('/') {
             instance_url.pop();
         }
@@ -359,7 +358,7 @@ mod tests {
 
     /// Throwaway test-only RSA private key. No security value.
     /// See `tests/fixtures/test_rsa_key.pem`.
-    const TEST_PEM: &[u8] = include_bytes!("../../tests/fixtures/test_rsa_key.pem");
+    const TEST_PEM: &[u8] = include_bytes!("../tests/fixtures/test_rsa_key.pem");
 
     fn builder_with_required_fields() -> JwtAuthBuilder {
         JwtAuth::builder()
@@ -379,7 +378,7 @@ mod tests {
             .instance_url("https://x")
             .build()
             .unwrap_err();
-        assert!(matches!(err, CirrusError::MissingField("consumer_key")));
+        assert!(matches!(err, AuthError::MissingField("consumer_key")));
     }
 
     #[test]
@@ -391,7 +390,7 @@ mod tests {
             .instance_url("https://x")
             .build()
             .unwrap_err();
-        assert!(matches!(err, CirrusError::MissingField("username")));
+        assert!(matches!(err, AuthError::MissingField("username")));
     }
 
     #[test]
@@ -402,7 +401,7 @@ mod tests {
             .instance_url("https://x")
             .build()
             .unwrap_err();
-        assert!(matches!(err, CirrusError::MissingField("private_key")));
+        assert!(matches!(err, AuthError::MissingField("private_key")));
     }
 
     #[test]
@@ -414,7 +413,7 @@ mod tests {
             .unwrap()
             .build()
             .unwrap_err();
-        assert!(matches!(err, CirrusError::MissingField("instance_url")));
+        assert!(matches!(err, AuthError::MissingField("instance_url")));
     }
 
     #[test]
@@ -422,7 +421,7 @@ mod tests {
         let err = JwtAuth::builder()
             .private_key_pem_bytes(b"not a pem")
             .unwrap_err();
-        assert!(matches!(err, CirrusError::Auth(_)));
+        assert!(matches!(err, AuthError::Other(_)));
     }
 
     #[test]
@@ -521,7 +520,7 @@ mod tests {
 
         let err = auth.access_token().await.unwrap_err();
         match err {
-            CirrusError::OAuth {
+            AuthError::OAuth {
                 error,
                 error_description,
             } => {
@@ -550,7 +549,7 @@ mod tests {
             .unwrap();
 
         let err = auth.access_token().await.unwrap_err();
-        assert!(matches!(err, CirrusError::Auth(_)));
+        assert!(matches!(err, AuthError::Other(_)));
     }
 
     /// `invalidate(stale_token)` is a compare-and-swap: it should

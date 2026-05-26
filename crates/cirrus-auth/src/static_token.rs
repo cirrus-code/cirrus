@@ -5,17 +5,16 @@
 //! performed an OAuth flow out-of-band (e.g. via the `sfdx` CLI) and want to
 //! reuse the resulting token. Real OAuth flows live in sibling modules.
 
-use crate::auth::AuthSession;
-use crate::error::CirrusResult;
+use crate::AuthSession;
+use crate::error::AuthResult;
 use async_trait::async_trait;
 use std::borrow::Cow;
 
 /// Authentication backed by a fixed access token and instance URL.
 ///
-/// Once the token expires, requests will start failing with
-/// [`crate::error::CirrusError::Api`] containing
-/// `INVALID_SESSION_ID`. This type does not refresh; pair it with a flow
-/// that does (or rebuild the client) to recover.
+/// Once the token expires, requests will start failing with a 401
+/// `INVALID_SESSION_ID` from Salesforce. This type does not refresh;
+/// pair it with a flow that does (or rebuild the client) to recover.
 #[derive(Debug, Clone)]
 pub struct StaticTokenAuth {
     access_token: String,
@@ -31,25 +30,20 @@ impl StaticTokenAuth {
     /// Static-token auth doesn't refresh — when the token expires, calls
     /// will surface 401. Use for short-lived scripts, CLI tools, or
     /// tests where you've pasted a token from `sf org display`. For
-    /// long-running services prefer [`JwtAuth`](crate::auth::JwtAuth) or
-    /// [`RefreshTokenAuth`](crate::auth::RefreshTokenAuth).
+    /// long-running services prefer [`JwtAuth`](crate::JwtAuth) or
+    /// [`RefreshTokenAuth`](crate::RefreshTokenAuth).
     ///
     /// # Example
     ///
-    /// ```no_run
-    /// use cirrus::auth::StaticTokenAuth;
-    /// use cirrus::Cirrus;
+    /// ```
+    /// use cirrus_auth::{AuthSession, StaticTokenAuth};
     /// use std::sync::Arc;
     ///
-    /// # fn example() -> Result<(), cirrus::CirrusError> {
-    /// let auth = Arc::new(StaticTokenAuth::new(
+    /// let auth: Arc<dyn AuthSession> = Arc::new(StaticTokenAuth::new(
     ///     "00D...!AQ...",
     ///     "https://my-org.my.salesforce.com",
     /// ));
-    /// let sf = Cirrus::builder().auth(auth).build()?;
-    /// # let _ = sf;
-    /// # Ok(())
-    /// # }
+    /// assert_eq!(auth.instance_url(), "https://my-org.my.salesforce.com");
     /// ```
     pub fn new(access_token: impl Into<String>, instance_url: impl Into<String>) -> Self {
         let mut instance_url: String = instance_url.into();
@@ -65,7 +59,7 @@ impl StaticTokenAuth {
 
 #[async_trait]
 impl AuthSession for StaticTokenAuth {
-    async fn access_token(&self) -> CirrusResult<Cow<'_, str>> {
+    async fn access_token(&self) -> AuthResult<Cow<'_, str>> {
         Ok(Cow::Borrowed(&self.access_token))
     }
 

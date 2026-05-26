@@ -42,11 +42,11 @@
 //! `instance_url`, and (depending on the connected app's scopes and the
 //! request) optional `refresh_token`, `id_token`, `scope`, `issued_at`.
 //! If a `refresh_token` is returned, wire it into a
-//! [`crate::auth::RefreshTokenAuth`] for ongoing API access — the same
+//! [`crate::RefreshTokenAuth`] for ongoing API access — the same
 //! pattern as Web Server PKCE.
 
-use crate::auth::token_endpoint::exchange;
-use crate::error::{CirrusError, CirrusResult};
+use crate::error::{AuthError, AuthResult};
+use crate::token_endpoint::exchange;
 
 /// RFC 8693 grant-type URN for the regular token exchange flow.
 pub const GRANT_TYPE_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
@@ -140,7 +140,7 @@ impl TokenExchangeFlow {
     /// specific `subject_token` that may already have been consumed at the
     /// IdP — re-running with the same builder would risk a double-spend
     /// of the IdP's token.
-    pub async fn exchange(self) -> CirrusResult<TokenExchangeSession> {
+    pub async fn exchange(self) -> AuthResult<TokenExchangeSession> {
         let scope_joined;
         let mut body: Vec<(&str, &str)> = vec![
             ("grant_type", self.grant_type.as_urn()),
@@ -308,19 +308,17 @@ impl TokenExchangeFlowBuilder {
     }
 
     /// Finalizes the builder.
-    pub fn build(self) -> CirrusResult<TokenExchangeFlow> {
+    pub fn build(self) -> AuthResult<TokenExchangeFlow> {
         let consumer_key = self
             .consumer_key
-            .ok_or(CirrusError::MissingField("consumer_key"))?;
+            .ok_or(AuthError::MissingField("consumer_key"))?;
         let subject_token = self
             .subject_token
-            .ok_or(CirrusError::MissingField("subject_token"))?;
+            .ok_or(AuthError::MissingField("subject_token"))?;
         let subject_token_type = self
             .subject_token_type
-            .ok_or(CirrusError::MissingField("subject_token_type"))?;
-        let mut login_url = self
-            .login_url
-            .ok_or(CirrusError::MissingField("login_url"))?;
+            .ok_or(AuthError::MissingField("subject_token_type"))?;
+        let mut login_url = self.login_url.ok_or(AuthError::MissingField("login_url"))?;
         if login_url.ends_with('/') {
             login_url.pop();
         }
@@ -403,7 +401,7 @@ mod tests {
             .subject_token_type(SubjectTokenType::Jwt)
             .build()
             .unwrap_err();
-        assert!(matches!(err, CirrusError::MissingField("consumer_key")));
+        assert!(matches!(err, AuthError::MissingField("consumer_key")));
     }
 
     #[test]
@@ -414,7 +412,7 @@ mod tests {
             .subject_token_type(SubjectTokenType::Jwt)
             .build()
             .unwrap_err();
-        assert!(matches!(err, CirrusError::MissingField("login_url")));
+        assert!(matches!(err, AuthError::MissingField("login_url")));
     }
 
     #[test]
@@ -425,7 +423,7 @@ mod tests {
             .subject_token_type(SubjectTokenType::Jwt)
             .build()
             .unwrap_err();
-        assert!(matches!(err, CirrusError::MissingField("subject_token")));
+        assert!(matches!(err, AuthError::MissingField("subject_token")));
     }
 
     #[test]
@@ -436,10 +434,7 @@ mod tests {
             .subject_token("t")
             .build()
             .unwrap_err();
-        assert!(matches!(
-            err,
-            CirrusError::MissingField("subject_token_type")
-        ));
+        assert!(matches!(err, AuthError::MissingField("subject_token_type")));
     }
 
     #[test]
@@ -607,7 +602,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            CirrusError::OAuth {
+            AuthError::OAuth {
                 error,
                 error_description,
             } => {

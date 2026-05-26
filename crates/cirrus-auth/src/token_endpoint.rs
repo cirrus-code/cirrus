@@ -6,10 +6,10 @@
 //! them: an `application/x-www-form-urlencoded` POST body, and a JSON
 //! response that's either a [`TokenResponse`] on 2xx or
 //! `{error, error_description}` on 4xx/5xx. The flow-specific code in
-//! [`crate::auth::jwt`], [`crate::auth::refresh`], etc. constructs the form
-//! body; [`exchange`] handles the rest.
+//! [`crate::jwt`], [`crate::refresh`], etc. constructs the form body;
+//! [`exchange`] handles the rest.
 
-use crate::error::{CirrusError, CirrusResult};
+use crate::error::{AuthError, AuthResult};
 use serde::{Deserialize, Serialize};
 
 /// Successful token-endpoint response.
@@ -80,12 +80,12 @@ struct OAuthErrorResponse {
 /// The caller assembles the form body with the flow-specific fields
 /// (`grant_type`, `assertion`, `refresh_token`, etc.). On non-2xx, the body
 /// is parsed as the OAuth error shape if possible; otherwise the raw body
-/// is folded into a generic [`CirrusError::Auth`] message.
+/// is folded into a generic [`AuthError::Other`] message.
 pub(super) async fn exchange<B>(
     http: &reqwest::Client,
     login_url: &str,
     body: &B,
-) -> CirrusResult<TokenResponse>
+) -> AuthResult<TokenResponse>
 where
     B: Serialize + ?Sized,
 {
@@ -96,29 +96,29 @@ where
 
     if !(200..300).contains(&status) {
         if let Ok(oauth_err) = serde_json::from_slice::<OAuthErrorResponse>(&bytes) {
-            return Err(CirrusError::OAuth {
+            return Err(AuthError::OAuth {
                 error: oauth_err.error,
                 error_description: oauth_err.error_description,
             });
         }
-        return Err(CirrusError::Auth(format!(
+        return Err(AuthError::Other(format!(
             "token endpoint returned status {status}: {}",
             String::from_utf8_lossy(&bytes)
         )));
     }
 
     serde_json::from_slice::<TokenResponse>(&bytes)
-        .map_err(|e| CirrusError::Auth(format!("malformed token response: {e}")))
+        .map_err(|e| AuthError::Other(format!("malformed token response: {e}")))
 }
 
 /// Validates that a token response's `instance_url` matches the value the
 /// caller configured. A mismatch usually signals a misconfigured Connected
 /// App (wrong org), which is more actionable when surfaced at auth time
 /// than as a downstream API error.
-pub(super) fn check_instance_url(expected: &str, response: &TokenResponse) -> CirrusResult<()> {
+pub(super) fn check_instance_url(expected: &str, response: &TokenResponse) -> AuthResult<()> {
     let returned = response.instance_url.trim_end_matches('/');
     if returned != expected {
-        return Err(CirrusError::Auth(format!(
+        return Err(AuthError::Other(format!(
             "token response instance_url ({returned}) does not match configured instance_url ({expected})"
         )));
     }

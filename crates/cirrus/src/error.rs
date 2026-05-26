@@ -4,9 +4,15 @@
 //! consistent shape (`message`, `errorCode`, optional `fields`), regardless of
 //! the success-response shape. [`SalesforceError`] models that shape, and
 //! [`CirrusError::Api`] carries the parsed array along with the HTTP
-//! status. OAuth token endpoints use a different shape (`error` /
-//! `error_description`), surfaced via [`CirrusError::OAuth`].
+//! status.
+//!
+//! Auth-flow errors (OAuth token endpoints, JWT signing, missing builder
+//! fields on a flow) come from the [`cirrus_auth`] crate as
+//! [`AuthError`](cirrus_auth::AuthError) and are wrapped by
+//! [`CirrusError::Auth`]. The `From<AuthError>` impl lets handlers
+//! propagate them via `?` without extra boilerplate.
 
+use cirrus_auth::AuthError;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -59,18 +65,10 @@ pub enum CirrusError {
         raw: Option<String>,
     },
 
-    /// OAuth token endpoint returned an error response (`error` /
-    /// `error_description` shape).
-    #[error("OAuth error: {error}{}", .error_description.as_deref().map(|d| format!(" — {d}")).unwrap_or_default())]
-    OAuth {
-        error: String,
-        error_description: Option<String>,
-    },
-
-    /// An auth implementation failed to produce a token (network, expired
-    /// credentials, signing failure, etc.). Carries the underlying message.
-    #[error("authentication failed: {0}")]
-    Auth(String),
+    /// An auth flow (token acquisition, refresh, OAuth exchange) failed.
+    /// Wraps the underlying [`AuthError`] from `cirrus-auth`.
+    #[error(transparent)]
+    Auth(#[from] AuthError),
 
     /// JSON serialization or deserialization failure.
     #[error("serialization error: {0}")]

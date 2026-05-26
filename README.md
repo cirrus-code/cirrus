@@ -4,13 +4,15 @@ A family of Rust crates for the Salesforce platform. Not affiliated with Salesfo
 
 ## Crates
 
-| Crate                      | Status  | Description                                                                                                                   |
-|----------------------------|---------|-------------------------------------------------------------------------------------------------------------------------------|
-| [`cirrus`](crates/cirrus/) | 0.1.0   | HTTP client for the Salesforce REST API — sObject CRUD, SOQL/SOSL, Bulk 2.0, composite, Tooling, Apex REST, Event Monitoring. |
-| `cirrus-auth`              | planned | Shared OAuth flows and token management. Extracted from `cirrus`'s `auth/` module.                                            |
-| `cirrus-metadata`          | planned | Client for the Salesforce Metadata API (SOAP).                                                                                |
+| Crate                                | Status  | Description                                                                                                                   |
+|--------------------------------------|---------|-------------------------------------------------------------------------------------------------------------------------------|
+| [`cirrus`](crates/cirrus/)           | 0.1.0   | HTTP client for the Salesforce REST API — sObject CRUD, SOQL/SOSL, Bulk 2.0, composite, Tooling, Apex REST, Event Monitoring. |
+| [`cirrus-auth`](crates/cirrus-auth/) | 0.1.0   | Salesforce OAuth 2.0 flows (JWT, Refresh, Client Credentials, Web Server PKCE, Token Exchange) + the `AuthSession` trait.     |
+| `cirrus-metadata`                    | planned | Client for the Salesforce Metadata API (SOAP).                                                                                |
 
 Each crate ships and versions independently. They share a workspace so dependency versions, lint config, and tooling stay consistent.
+
+`cirrus-auth` is re-exported as `cirrus::auth`, so users of `cirrus` don't need an explicit `cirrus-auth` dependency — `cirrus = "..."` is enough. Other Cirrus sibling crates (e.g. `cirrus-metadata`) depend on `cirrus-auth` directly so they don't pull in the REST client.
 
 ## Development
 

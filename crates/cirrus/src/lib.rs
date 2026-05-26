@@ -42,14 +42,23 @@
 //! # }
 //! ```
 
-pub mod auth;
 mod error;
 pub mod handlers;
 pub mod pagination;
 mod response;
 pub mod retry;
 
-pub use auth::{AuthSession, SharedAuth};
+/// Re-export of the [`cirrus_auth`] crate as `cirrus::auth`.
+///
+/// All OAuth flow implementations live in the standalone `cirrus-auth`
+/// crate so that other Cirrus subcrates (e.g. `cirrus-metadata`) can
+/// depend on them without pulling in the REST client. Users of `cirrus`
+/// don't need an explicit `cirrus-auth` dependency — this re-export
+/// keeps `cirrus::auth::{StaticTokenAuth, JwtAuth, ...}` working
+/// transparently.
+pub use cirrus_auth as auth;
+
+pub use auth::{AuthError, AuthSession, SharedAuth};
 pub use bytes::Bytes;
 pub use error::{CirrusError, CirrusResult, SalesforceError};
 pub use handlers::bulk::{BulkIngestSpec, BulkQuerySpec};
@@ -1521,8 +1530,7 @@ mod tests {
     /// observe the SDK switching tokens after invalidation.
     mod auth_refresh {
         use super::*;
-        use crate::auth::{AuthSession, SharedAuth};
-        use crate::error::CirrusResult;
+        use crate::auth::{AuthResult, AuthSession, SharedAuth};
         use async_trait::async_trait;
         use serde_json::{Value, json};
         use std::borrow::Cow;
@@ -1557,7 +1565,7 @@ mod tests {
 
         #[async_trait]
         impl AuthSession for RotatingAuth {
-            async fn access_token(&self) -> CirrusResult<Cow<'_, str>> {
+            async fn access_token(&self) -> AuthResult<Cow<'_, str>> {
                 let n = self.access_count.fetch_add(1, Ordering::SeqCst);
                 let idx = n.min(self.tokens.len() - 1);
                 Ok(Cow::Borrowed(&self.tokens[idx]))

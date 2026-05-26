@@ -156,17 +156,34 @@ name = "cirrus"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64",
  "bytes",
- "camino",
+ "cirrus-auth",
  "dotenvy",
- "fs-err",
  "futures",
  "getrandom 0.4.2",
  "http-serde",
  "httpdate",
- "jsonwebtoken",
  "proptest",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "wiremock",
+]
+
+[[package]]
+name = "cirrus-auth"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "camino",
+ "fs-err",
+ "getrandom 0.4.2",
+ "jsonwebtoken",
  "reqwest",
  "serde",
  "serde_json",

@@ -4,10 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`cirrus` is a Rust HTTP client for the Salesforce REST API (unaffiliated with Salesforce). Pre-1.0; not yet on crates.io.
+`cirrus` is a family of Rust crates for the Salesforce platform (unaffiliated with Salesforce). Pre-1.0.
+
+Workspace members:
+- **`cirrus`** — HTTP client for the Salesforce REST API. **Published**: `0.2.0` is on crates.io as the original single-crate release.
+- **`cirrus-auth`** — OAuth 2.0 flows + the `AuthSession` trait. **Published**: `0.1.0` is on crates.io. Re-exported by `cirrus` as `cirrus::auth` so end users don't add it as an explicit dependency. Other sibling crates (planned: `cirrus-metadata`) depend on it directly so they don't pull in the REST client.
 
 Shipped surface:
-- All five priority OAuth flows (JWT, Refresh, Client Credentials, Web Server PKCE, Token Exchange) + Static.
+- All five priority OAuth flows (JWT, Refresh, Client Credentials, Web Server PKCE, Token Exchange) + Static — in `cirrus-auth`.
 - Phase 1: versions, limits, describe (global + per-object), sObject CRUD, query/queryAll/queryMore, search/parameterizedSearch.
 - Phase 2: composite/batch, composite/tree, composite/sobjects (incl. `retrieve_with_body`), generic `/composite`, Bulk 2.0 (ingest + query), Apex REST passthrough, Tooling API, Event Monitoring.
 - Cross-cutting: open-ended client escape hatch, pagination stream (`futures::Stream`), retry + backoff policy, `Sforce-Limit-Info` surfacing, auto-refresh on 401, multipart blob uploads.
@@ -46,6 +50,13 @@ If you find yourself wanting a fifth, first check whether the existing four woul
 - Methods that return records expose two variants: the default (returns `serde_json::Value`) and `_as::<R>` for typed deserialization.
 - **Never** model org-specific types. Platform envelopes (response shapes Salesforce defines) live in `crates/cirrus/src/response.rs` and are re-exported at the crate root; record types are caller-supplied via the generic `R: DeserializeOwned`.
 - Pagination support: handlers with paginated GETs add `_stream` / `_stream_as` variants returning `pagination::Records<R>` (a `futures::Stream`). See `query`/`tooling.query` for the pattern.
+
+### Auth crate boundary
+
+- `crates/cirrus-auth/src/` houses every OAuth flow plus the `AuthSession` trait. It owns its own error type, `AuthError` / `AuthResult` — the crate has no dependency on `cirrus`, which is what lets future siblings like `cirrus-metadata` depend on it directly.
+- `cirrus` re-exports the whole crate via `pub use cirrus_auth as auth;`, plus the convenience re-exports `cirrus::{AuthSession, SharedAuth, AuthError}`. End users keep writing `use cirrus::auth::JwtAuth` — the move is transparent.
+- `CirrusError::Auth(#[from] AuthError)` lets `?` propagate auth failures from `self.auth.access_token().await?` in handlers without conversions. Pattern-match on `CirrusError::Auth(AuthError::OAuth { .. })` etc. for auth-flavored errors.
+- When adding a new flow or modifying auth code, work in `cirrus-auth` — do **not** add auth code back into `cirrus`. The split is load-bearing for the upcoming `cirrus-metadata` extraction.
 
 ## Test conventions
 
@@ -90,14 +101,27 @@ cirrus/
 ├── clippy.toml, deny.toml      # apply to all workspace members
 ├── docs/, scripts/             # cross-crate
 └── crates/
-    └── cirrus/                 # the REST client crate
-        ├── Cargo.toml          # package manifest, inherits via *.workspace = true
+    ├── cirrus/                 # the REST client crate
+    │   ├── Cargo.toml          # depends on cirrus-auth (workspace dep)
+    │   ├── src/
+    │   ├── tests/
+    │   └── examples/
+    └── cirrus-auth/            # OAuth flows + AuthSession trait
+        ├── Cargo.toml
         ├── src/
-        ├── tests/
-        └── examples/
+        │   ├── lib.rs          # AuthSession trait, re-exports
+        │   ├── error.rs        # AuthError / AuthResult
+        │   ├── static_token.rs
+        │   ├── jwt.rs
+        │   ├── refresh.rs
+        │   ├── client_credentials.rs
+        │   ├── web_server.rs
+        │   ├── token_exchange.rs
+        │   └── token_endpoint.rs   # shared OAuth POST helper
+        └── tests/fixtures/     # JWT RSA test key
 ```
 
-Shared dependency versions are declared in `[workspace.dependencies]` and inherited per-crate via `dep.workspace = true`. Lint denials live in `[workspace.lints.clippy]` and are activated per-crate via `[lints] workspace = true`. New sibling crates inherit both automatically.
+Shared dependency versions are declared in `[workspace.dependencies]` (including `cirrus-auth = { path = "crates/cirrus-auth" }`) and inherited per-crate via `dep.workspace = true`. Lint denials live in `[workspace.lints.clippy]` and are activated per-crate via `[lints] workspace = true`. New sibling crates inherit both automatically.
 
 ## Development Environment
 
@@ -134,7 +158,7 @@ The workspace `Cargo.toml` sets these clippy lints to `deny` via `[workspace.lin
 - `std::fs::*` (read, write, open, create, remove, copy, rename, metadata, canonicalize, etc.) → use the `fs_err` equivalents so error messages include the offending path.
 - `std::fs::OpenOptions` → `fs_err::OpenOptions`.
 
-When adding dependencies, prefer `camino` and `fs_err` for any path/IO work — they're not yet in `[dependencies]` but will be needed as soon as filesystem code is introduced.
+`camino` and `fs-err` are workspace dependencies, currently consumed by `cirrus-auth` (JWT key file loading). New crates that touch the filesystem should add them via `dep.workspace = true`.
 
 ## Release Process
 

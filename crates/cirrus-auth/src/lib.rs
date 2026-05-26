@@ -1,4 +1,4 @@
-//! Authentication abstractions for the Salesforce REST API.
+//! Salesforce OAuth 2.0 authentication flows for the Cirrus SDK.
 //!
 //! Salesforce supports several OAuth 2.0 flows, each producing the same two
 //! pieces of information: a bearer access token and an `instance_url` that
@@ -10,6 +10,15 @@
 //! for their own token acquisition, refresh, and any caching. The trait
 //! method is `async` so an implementation may transparently refresh an
 //! expired token when called.
+//!
+//! ## Crate boundary
+//!
+//! This crate is the canonical home of every auth flow used by the
+//! Cirrus SDK. It is re-exported as `cirrus::auth` so end users never
+//! depend on `cirrus-auth` directly — `cirrus = "..."` is enough. Other
+//! Cirrus subcrates (e.g. `cirrus-metadata`) that need an authenticated
+//! session depend on `cirrus-auth` so they don't pull in the full REST
+//! client.
 //!
 //! ## Implementations
 //!
@@ -30,12 +39,12 @@
 //! Flows Salesforce lists as legacy or deprecated are intentionally not
 //! supported.
 
-use crate::error::CirrusResult;
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::sync::Arc;
 
 pub mod client_credentials;
+mod error;
 pub mod jwt;
 pub mod refresh;
 pub mod static_token;
@@ -44,6 +53,7 @@ pub mod token_exchange;
 pub mod web_server;
 
 pub use client_credentials::{ClientCredentialsAuth, ClientCredentialsAuthBuilder};
+pub use error::{AuthError, AuthResult};
 pub use jwt::{JwtAuth, JwtAuthBuilder};
 pub use refresh::{RefreshTokenAuth, RefreshTokenAuthBuilder};
 pub use static_token::StaticTokenAuth;
@@ -66,7 +76,7 @@ pub use web_server::{CompletedSession, PendingExchange, WebServerFlow, WebServer
 pub trait AuthSession: Send + Sync {
     /// Returns a valid bearer access token. Implementations may refresh
     /// expired tokens transparently here; that is why the method is `async`.
-    async fn access_token(&self) -> CirrusResult<Cow<'_, str>>;
+    async fn access_token(&self) -> AuthResult<Cow<'_, str>>;
 
     /// Returns the instance URL for REST requests, e.g.
     /// `https://my-org.my.salesforce.com`. No trailing slash.
@@ -84,11 +94,10 @@ pub trait AuthSession: Send + Sync {
     /// have refreshed in the meantime.
     ///
     /// Default impl is a no-op for static or stateless sessions
-    /// ([`crate::auth::StaticTokenAuth`]) where there is nothing to
-    /// invalidate. Stateful flows ([`crate::auth::JwtAuth`],
-    /// [`crate::auth::RefreshTokenAuth`],
-    /// [`crate::auth::ClientCredentialsAuth`]) override to clear
-    /// their cached token.
+    /// ([`StaticTokenAuth`]) where there is nothing to invalidate.
+    /// Stateful flows ([`JwtAuth`], [`RefreshTokenAuth`],
+    /// [`ClientCredentialsAuth`]) override to clear their cached
+    /// token.
     ///
     /// `stale_token` is borrowed for the duration of the call only —
     /// implementations should compare it against their cached value

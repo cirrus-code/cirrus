@@ -22,7 +22,7 @@ sleeps and the auth-cache synchronization both rely on it. Add tokio alongside
 
 ```toml
 [dependencies]
-cirrus = "0.1"
+cirrus = "0.2.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -97,7 +97,7 @@ retry once with a fresh token, transparently. Compare-and-swap semantics avoid
 clobbering a token a concurrent task just refreshed.
 
 The flows live in the [`cirrus-auth`](../cirrus-auth/) sub-crate and are
-re-exported as `cirrus::auth::*` — `cirrus = "..."` alone is enough; you
+re-exported as `cirrus::auth::*` — `cirrus = "0.2.0"` alone is enough; you
 don't need to add `cirrus-auth` to your `Cargo.toml`. Auth errors come
 back as `CirrusError::Auth(cirrus_auth::AuthError)`, so `?` works at the
 boundary between auth and REST without extra plumbing.

@@ -1,0 +1,220 @@
+//! SOAP transport — request dispatch, retry, and auth-refresh.
+//!
+//! [`SoapOperation`] is the trait every handler implements; it specifies
+//! the operation's name and response shape, and renders the body XML.
+//! [`soap_call`] is the dispatcher that:
+//!
+//! 1. Asks [`AuthSession`] for a bearer token.
+//! 2. Builds the envelope around the rendered body.
+//! 3. POSTs to `/services/Soap/m/{api_version}` with the SOAP-required
+//!    headers (`Content-Type: text/xml; charset=UTF-8`, `SOAPAction: ""`).
+//! 4. Retries transient HTTP failures per the client's [`RetryPolicy`].
+//! 5. Parses the response envelope into either a typed `O::Response` or
+//!    a [`MetadataError::Soap`] carrying the [`SoapFault`].
+//! 6. On `INVALID_SESSION_ID` faults, invalidates the cached token and
+//!    retries the entire call once with a freshly-minted token.
+//!
+//! [`AuthSession`]: cirrus_auth::AuthSession
+//! [`SoapFault`]: crate::error::SoapFault
+
+use crate::MetadataClient;
+use crate::envelope::{self, EnvelopeBody};
+use crate::error::{MetadataError, MetadataResult};
+use crate::retry;
+use bytes::Bytes;
+use serde::de::DeserializeOwned;
+
+/// A typed SOAP operation against the Metadata API.
+///
+/// Implement this for each call. The transport handles the envelope,
+/// auth header, retry, and fault detection — the implementor only
+/// renders the operation-specific body XML and names the response type.
+///
+/// ## The response wrapper
+///
+/// The Metadata API returns success responses as
+/// `<{NAME}Response>...</{NAME}Response>`. The transport preserves that
+/// outer wrapper when deserializing, so response structs can be named
+/// after the wire element and use serde's standard derive to map child
+/// elements:
+///
+/// ```ignore
+/// #[derive(serde::Deserialize)]
+/// struct ListMetadataResponse {
+///     #[serde(default, rename = "result")]
+///     result: Vec<FileProperties>,
+/// }
+/// ```
+///
+/// quick-xml's serde deserializer doesn't enforce that the struct's
+/// name matches the root element's name; the child-field mapping is
+/// what matters.
+pub trait SoapOperation {
+    /// Unqualified SOAP operation name, e.g. `"deploy"`. Used both to
+    /// wrap the body in `<met:NAME>...</met:NAME>` and to recognize
+    /// `<NAMEResponse>` on the way back.
+    const NAME: &'static str;
+
+    /// The typed response shape. Deserialized via `quick-xml`'s serde
+    /// implementation from the bytes of the full
+    /// `<{NAME}Response>...</{NAME}Response>` element.
+    type Response: DeserializeOwned;
+
+    /// Render the operation-specific body XML — everything between
+    /// `<met:NAME>` and `</met:NAME>`. May be empty for operations that
+    /// take no arguments.
+    ///
+    /// The renderer is responsible for any inner XML namespaces; the
+    /// outer `met:` prefix is added by the transport.
+    fn render_body(&self) -> MetadataResult<String>;
+}
+
+/// Dispatch one SOAP operation through the client.
+pub(crate) async fn soap_call<O: SoapOperation>(
+    client: &MetadataClient,
+    op: &O,
+) -> MetadataResult<O::Response> {
+    let response_local = format!("{}Response", O::NAME);
+    let body_xml = op.render_body()?;
+    let inner = call_with_auth_retry(client, O::NAME, &body_xml, &response_local).await?;
+    let parsed: O::Response = quick_xml::de::from_reader(inner.as_slice())?;
+    Ok(parsed)
+}
+
+/// Outer loop: handles INVALID_SESSION_ID auto-refresh (at most once).
+/// Each iteration mints a fresh token from [`AuthSession`] and runs the
+/// inner HTTP retry loop.
+async fn call_with_auth_retry(
+    client: &MetadataClient,
+    op_name: &str,
+    body_xml: &str,
+    response_local: &str,
+) -> MetadataResult<Vec<u8>> {
+    // First iteration fetches a token from the auth session. On a
+    // refresh-after-INVALID_SESSION_ID we thread the *already-fetched*
+    // fresh token in here, instead of calling access_token() a second
+    // time — for flows like JWT bearer the second call would re-sign
+    // and re-hit the token endpoint.
+    let mut next_token: Option<String> = None;
+    let mut auth_retried = false;
+    loop {
+        let token_str = match next_token.take() {
+            Some(t) => t,
+            None => {
+                let token = client.auth.access_token().await?;
+                token.into_owned()
+            }
+        };
+
+        let envelope = envelope::build_envelope(&token_str, op_name, body_xml);
+        // Bytes is Arc-backed — clones on retry are cheap.
+        let body = Bytes::from(envelope.into_bytes());
+        let result = send_with_retries(client, body, response_local).await;
+
+        if !auth_retried
+            && let Err(MetadataError::Soap { fault, .. }) = &result
+            && fault.is_invalid_session()
+        {
+            tracing::warn!(
+                target: "cirrus_metadata::auth",
+                "INVALID_SESSION_ID fault; invalidating cached token and retrying once",
+            );
+            client.auth.invalidate(&token_str).await;
+            // Compare-and-fail: if the auth session can't actually
+            // refresh (e.g. StaticTokenAuth), surface the original
+            // fault rather than looping. We keep the fresh token to
+            // reuse on the next iteration.
+            let fresh = client.auth.access_token().await?.into_owned();
+            if fresh == token_str {
+                tracing::warn!(
+                    target: "cirrus_metadata::auth",
+                    "auth session returned the same token after invalidate; surfacing fault \
+                     (likely static auth or scope/permission issue)",
+                );
+                return result;
+            }
+            next_token = Some(fresh);
+            auth_retried = true;
+            continue;
+        }
+        return result;
+    }
+}
+
+/// Inner loop: retries transient HTTP failures per [`RetryPolicy`].
+/// Returns the bytes of the response envelope's
+/// `<{NAME}Response>...</{NAME}Response>` element on success.
+async fn send_with_retries(
+    client: &MetadataClient,
+    envelope_bytes: Bytes,
+    response_local: &str,
+) -> MetadataResult<Vec<u8>> {
+    let url = client.endpoint_url();
+    let method = reqwest::Method::POST;
+    let mut attempt: u32 = 0;
+    loop {
+        let request = client
+            .http
+            .post(&url)
+            .header(reqwest::header::CONTENT_TYPE, "text/xml; charset=UTF-8")
+            // SOAP 1.1 requires SOAPAction; Salesforce expects the
+            // literal empty-string form (`""`).
+            .header("SOAPAction", "\"\"")
+            // Bytes is Arc-backed; clone is a refcount bump, not a
+            // memcpy of the envelope body.
+            .body(envelope_bytes.clone());
+
+        match request.send().await {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let headers = response.headers().clone();
+
+                if retry::should_retry_status(&client.retry_policy, &method, status, attempt) {
+                    // Drain the body so the connection returns clean.
+                    let _ = response.bytes().await;
+                    let retry_after = retry::parse_retry_after(&headers);
+                    let delay = retry::compute_delay(&client.retry_policy, attempt, retry_after);
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                    continue;
+                }
+
+                let bytes = response.bytes().await?;
+                // SOAP faults can arrive with HTTP 500 or (uncommonly) HTTP 200.
+                // Parse the envelope regardless and let it decide.
+                match envelope::parse_envelope(&bytes, response_local) {
+                    Ok(EnvelopeBody::Success(inner)) => return Ok(inner),
+                    Ok(EnvelopeBody::Fault(fault)) => {
+                        return Err(MetadataError::Soap { status, fault });
+                    }
+                    Err(parse_err) => {
+                        // 2xx with a body we couldn't parse is a
+                        // server-shape problem, not an HTTP error:
+                        // route through InvalidResponse so the variant
+                        // name matches the wire. Non-2xx with non-SOAP
+                        // body keeps Http4xx5xx.
+                        if (200..300).contains(&status) {
+                            return Err(MetadataError::InvalidResponse(format!(
+                                "HTTP {status} with non-SOAP body: {parse_err}"
+                            )));
+                        }
+                        return Err(MetadataError::Http4xx5xx {
+                            status,
+                            raw: String::from_utf8_lossy(&bytes).into_owned(),
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                let err: MetadataError = e.into();
+                if retry::should_retry_network(&client.retry_policy, &method, &err, attempt) {
+                    let delay = retry::compute_delay(&client.retry_policy, attempt, None);
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                    continue;
+                }
+                return Err(err);
+            }
+        }
+    }
+}

@@ -116,7 +116,6 @@ impl SubjectTokenType {
 /// One-shot RFC 8693 token-exchange request.
 ///
 /// Construct via [`TokenExchangeFlow::builder`].
-#[derive(Debug)]
 pub struct TokenExchangeFlow {
     consumer_key: String,
     consumer_secret: Option<String>,
@@ -127,6 +126,28 @@ pub struct TokenExchangeFlow {
     scopes: Vec<String>,
     token_handler: Option<String>,
     http: reqwest::Client,
+}
+
+// `subject_token` is the IdP-issued credential being exchanged — a
+// short-lived but live secret. `consumer_key` is a credential
+// identifier; `consumer_secret` the confidential-client secret. Redact
+// all three.
+impl std::fmt::Debug for TokenExchangeFlow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenExchangeFlow")
+            .field("consumer_key", &"[redacted]")
+            .field(
+                "consumer_secret",
+                &self.consumer_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("login_url", &self.login_url)
+            .field("subject_token", &"[redacted]")
+            .field("subject_token_type", &self.subject_token_type)
+            .field("grant_type", &self.grant_type)
+            .field("scopes", &self.scopes)
+            .field("token_handler", &self.token_handler)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TokenExchangeFlow {
@@ -174,7 +195,7 @@ impl TokenExchangeFlow {
 }
 
 /// Result of a successful Token Exchange.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TokenExchangeSession {
     /// Bearer access token for immediate Salesforce API calls.
     pub access_token: String,
@@ -198,6 +219,26 @@ pub struct TokenExchangeSession {
     /// connected-app consumer secret. Lets the caller verify the token
     /// came from Salesforce.
     pub signature: Option<String>,
+}
+
+// Tokens and the HMAC `signature` are secrets — redact in `{:?}`.
+// `instance_url`, `id`, `issued_at`, and `scope` are non-secret.
+impl std::fmt::Debug for TokenExchangeSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenExchangeSession")
+            .field("access_token", &"[redacted]")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field("id_token", &self.id_token.as_ref().map(|_| "[redacted]"))
+            .field("instance_url", &self.instance_url)
+            .field("issued_at", &self.issued_at)
+            .field("scope", &self.scope)
+            .field("id", &self.id)
+            .field("signature", &self.signature.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
 }
 
 /// Builder for [`TokenExchangeFlow`].
@@ -482,9 +523,8 @@ mod tests {
         assert_eq!(session.instance_url, "https://my-org.my.salesforce.com");
         assert_eq!(session.scope.as_deref(), Some("api refresh_token"));
         assert_eq!(session.issued_at.as_deref(), Some("1700000000000"));
-        // Audit-driven: surface the documented Salesforce identity
-        // extensions so federated-identity callers can correlate the
-        // exchanged session with the original IdP user.
+        // Identity fields propagate through so federated-identity callers
+        // can correlate the exchanged session with the original IdP user.
         assert_eq!(
             session.id.as_deref(),
             Some("https://login.salesforce.com/id/00DXX/005XX")

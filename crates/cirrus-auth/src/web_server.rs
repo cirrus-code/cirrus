@@ -65,10 +65,10 @@ pub const SANDBOX_LOGIN_URL: &str = "https://test.salesforce.com";
 
 /// Number of random bytes for the PKCE `code_verifier`. After base64-url
 /// (no-pad) encoding, 96 bytes → 128 chars, the maximum allowed by
-/// RFC 7636 and the value Salesforce's docs cite verbatim. 32 bytes (256
-/// bits) of entropy would already be cryptographically sufficient, but
-/// matching the literal Salesforce recommendation avoids audit-time
-/// pushback.
+/// RFC 7636 and the length Salesforce's docs cite verbatim. 32 bytes
+/// (256 bits) of entropy would already be cryptographically sufficient;
+/// matching Salesforce's recommendation keeps the wire shape identical
+/// to their published examples.
 const VERIFIER_BYTES: usize = 96;
 
 /// Number of random bytes for the `state` nonce. 16 bytes → 22 chars
@@ -145,7 +145,7 @@ impl WebServerFlow {
 /// Treat the contents as a secret — leakage of the `code_verifier` would
 /// let an attacker who intercepts the authorization code complete the
 /// exchange.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PendingExchange {
     consumer_key: String,
     consumer_secret: Option<String>,
@@ -153,6 +153,28 @@ pub struct PendingExchange {
     login_url: String,
     code_verifier: String,
     state: String,
+}
+
+// Redact secrets. `consumer_key` is a credential *identifier* (not as
+// sensitive as the secret, but still worth keeping out of logs).
+// `code_verifier` is the PKCE secret — leaking it lets anyone holding
+// the authorization code complete the exchange. `consumer_secret` is
+// the confidential-client secret. `state` is a CSRF nonce — non-secret
+// to the user but better hygiene to keep out of logs.
+impl std::fmt::Debug for PendingExchange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingExchange")
+            .field("consumer_key", &"[redacted]")
+            .field(
+                "consumer_secret",
+                &self.consumer_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("redirect_uri", &self.redirect_uri)
+            .field("login_url", &self.login_url)
+            .field("code_verifier", &"[redacted]")
+            .field("state", &"[redacted]")
+            .finish()
+    }
 }
 
 impl PendingExchange {
@@ -168,7 +190,12 @@ impl PendingExchange {
     ) -> AuthResult<CompletedSession> {
         // CSRF defense: the state we generated in start() must match what
         // the IdP echoed back. A mismatch typically means a forged callback.
-        if returned_state != self.state {
+        // Compare in constant time so a network-positioned attacker can't
+        // byte-by-byte oracle the state value via callback timing. The
+        // 22-char state is fixed-length per construction (csrf_state()
+        // always emits 22 base64url chars), so a length mismatch is also
+        // a mismatch — short-circuit it without leaking which-byte info.
+        if !constant_time_eq(returned_state.as_bytes(), self.state.as_bytes()) {
             return Err(AuthError::Other(
                 "state mismatch in OAuth callback".to_string(),
             ));
@@ -197,15 +224,17 @@ impl PendingExchange {
         })
     }
 
-    /// The `state` nonce sent in the authorization URL. Exposed for tests
-    /// and for callers that want to surface it to logs.
+    /// The `state` nonce sent in the authorization URL. Exposed so
+    /// integration tests can drive the callback step; production
+    /// callers normally don't need to read it. Treat as a CSRF
+    /// token — avoid emitting to logs or telemetry.
     pub fn state(&self) -> &str {
         &self.state
     }
 }
 
 /// Result of a successful authorization-code exchange.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CompletedSession {
     /// Bearer access token for immediate API calls.
     pub access_token: String,
@@ -226,6 +255,25 @@ pub struct CompletedSession {
     pub signature: Option<String>,
     /// Granted scopes, space-separated.
     pub scope: Option<String>,
+}
+
+// Tokens and the HMAC `signature` are secrets — redact in `{:?}`.
+// `instance_url`, `id`, `issued_at`, and `scope` are non-secret.
+impl std::fmt::Debug for CompletedSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompletedSession")
+            .field("access_token", &"[redacted]")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field("instance_url", &self.instance_url)
+            .field("id", &self.id)
+            .field("issued_at", &self.issued_at)
+            .field("signature", &self.signature.as_ref().map(|_| "[redacted]"))
+            .field("scope", &self.scope)
+            .finish()
+    }
 }
 
 /// Builder for [`WebServerFlow`].
@@ -353,6 +401,21 @@ fn random_b64url(len: usize) -> AuthResult<String> {
 fn pkce_s256_challenge(verifier: &str) -> String {
     let digest = Sha256::digest(verifier.as_bytes());
     URL_SAFE_NO_PAD.encode(digest)
+}
+
+/// Constant-time byte-slice equality. Mirrors the trivial algorithm
+/// used by `subtle`/`ring`: XOR every byte and OR the accumulator. The
+/// length check up front leaks length, which is fine here because the
+/// expected `state` is always a fixed 22-char string we generate.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 #[cfg(test)]
@@ -538,8 +601,8 @@ mod tests {
         assert_eq!(session.access_token, "00DXX!ACCESS");
         assert_eq!(session.refresh_token.as_deref(), Some("5Aep861KIwKdekr"));
         assert_eq!(session.instance_url, "https://my-org.my.salesforce.com");
-        // New audit-driven assertions: surface the documented Salesforce
-        // identity fields so callers can verify which user authenticated.
+        // Identity fields propagate through so callers can verify which
+        // user authenticated.
         assert_eq!(
             session.id.as_deref(),
             Some("https://login.salesforce.com/id/00DXX/005XX")

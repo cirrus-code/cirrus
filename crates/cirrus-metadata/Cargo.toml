@@ -1,11 +1,11 @@
 [package]
-name = "cirrus-auth"
-version = "0.2.2"
-description = "Salesforce OAuth 2.0 authentication flows for the Cirrus SDK."
-keywords = ["salesforce", "oauth", "auth", "jwt", "pkce"]
-categories = ["authentication", "api-bindings"]
+name = "cirrus-metadata"
+version = "0.1.0"
+description = "Salesforce Metadata API (SOAP) client for the Cirrus SDK."
+keywords = ["salesforce", "metadata", "soap", "deploy", "retrieve"]
+categories = ["api-bindings"]
 readme = "README.md"
-documentation = "https://docs.rs/cirrus-auth"
+documentation = "https://docs.rs/cirrus-metadata"
 
 edition.workspace = true
 license.workspace = true
@@ -14,26 +14,25 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-async-trait.workspace = true
+cirrus-auth.workspace = true
 base64.workspace = true
-camino.workspace = true
-fs-err.workspace = true
+bytes.workspace = true
 getrandom.workspace = true
-jsonwebtoken.workspace = true
+quick-xml.workspace = true
 reqwest.workspace = true
 serde.workspace = true
-serde_json.workspace = true
-serde_urlencoded.workspace = true
-sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-url.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
+bytes.workspace = true
 dotenvy.workspace = true
+proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock.workspace = true
+zip.workspace = true
 
 [lints]
 workspace = true
@@ -43,8 +42,6 @@ allow-branch = ["main"]
 sign-commit = true
 sign-tag = true
 push-remote = "origin"
-# Crate-qualified tag prefix so cirrus-auth releases don't collide
-# with `cirrus`'s existing `v{{version}}` tags (e.g. `v0.1.0`).
-tag-prefix = "cirrus-auth-v"
+tag-prefix = "cirrus-metadata-v"
 tag-name = "{{prefix}}{{version}}"
 publish = true

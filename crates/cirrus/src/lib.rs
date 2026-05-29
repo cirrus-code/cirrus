@@ -65,6 +65,10 @@ pub use handlers::bulk::{BulkIngestSpec, BulkQuerySpec};
 pub use handlers::composite::{
     BatchRequest, BatchSubrequest, CompositeRequest, CompositeSubrequest,
 };
+pub use handlers::metadata::{
+    DeployMessage, DeployOptions, DeployRequest, DeployResultDetails, DeployResultInnerDetails,
+    DeployStatus, MetadataHandler, RunTestResults, TestLevel,
+};
 pub use handlers::sobjects::BlobUploadSpec;
 pub use pagination::Records;
 pub use response::LimitInfo;
@@ -402,16 +406,15 @@ impl Cirrus {
         // RetryPolicy-driven transient-failure retry from the previous
         // round of work.
         let mut auth_retried = false;
+        let mut attempt: u32 = 0;
         loop {
             let token = self.auth.access_token().await?;
-            let token_str = token.to_string();
-            let mut attempt: u32 = 0;
 
             let result: CirrusResult<R> = loop {
                 let mut request = self
                     .client
                     .request(method.clone(), url)
-                    .bearer_auth(&token_str);
+                    .bearer_auth(&*token);
                 if let Some(q) = query {
                     request = request.query(q);
                 }
@@ -464,9 +467,9 @@ impl Cirrus {
                     target: "cirrus::auth",
                     "received 401; invalidating cached token and retrying once",
                 );
-                self.auth.invalidate(&token_str).await;
+                self.auth.invalidate(&token).await;
                 let fresh = self.auth.access_token().await?;
-                if *fresh == token_str {
+                if *fresh == *token {
                     tracing::warn!(
                         target: "cirrus::auth",
                         "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
@@ -498,17 +501,16 @@ impl Cirrus {
     {
         let url = self.resolve_url(path);
         let mut auth_retried = false;
+        let mut attempt: u32 = 0;
         loop {
             let token = self.auth.access_token().await?;
-            let token_str = token.to_string();
-            let mut attempt: u32 = 0;
 
             let result: CirrusResult<R> = loop {
                 // bytes::Bytes is Arc-backed — clone is cheap.
                 let request = self
                     .client
                     .request(method.clone(), &url)
-                    .bearer_auth(&token_str)
+                    .bearer_auth(&*token)
                     .header(reqwest::header::CONTENT_TYPE, content_type)
                     .body(body.clone());
 
@@ -552,9 +554,9 @@ impl Cirrus {
                     target: "cirrus::auth",
                     "received 401; invalidating cached token and retrying once",
                 );
-                self.auth.invalidate(&token_str).await;
+                self.auth.invalidate(&token).await;
                 let fresh = self.auth.access_token().await?;
-                if *fresh == token_str {
+                if *fresh == *token {
                     tracing::warn!(
                         target: "cirrus::auth",
                         "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
@@ -602,10 +604,9 @@ impl Cirrus {
     {
         let url = self.resolve_url(path);
         let mut auth_retried = false;
+        let mut attempt: u32 = 0;
         loop {
             let token = self.auth.access_token().await?;
-            let token_str = token.to_string();
-            let mut attempt: u32 = 0;
 
             let result: CirrusResult<R> = loop {
                 // Build a fresh Form per attempt — Form isn't Clone.
@@ -633,7 +634,7 @@ impl Cirrus {
                 let request = self
                     .client
                     .request(method.clone(), &url)
-                    .bearer_auth(&token_str)
+                    .bearer_auth(&*token)
                     .multipart(form);
 
                 match request.send().await {
@@ -676,9 +677,9 @@ impl Cirrus {
                     target: "cirrus::auth",
                     "received 401; invalidating cached token and retrying once",
                 );
-                self.auth.invalidate(&token_str).await;
+                self.auth.invalidate(&token).await;
                 let fresh = self.auth.access_token().await?;
-                if *fresh == token_str {
+                if *fresh == *token {
                     tracing::warn!(
                         target: "cirrus::auth",
                         "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
@@ -708,16 +709,15 @@ impl Cirrus {
     ) -> CirrusResult<(reqwest::header::HeaderMap, bytes::Bytes)> {
         let url = self.resolve_url(path);
         let mut auth_retried = false;
+        let mut attempt: u32 = 0;
         loop {
             let token = self.auth.access_token().await?;
-            let token_str = token.to_string();
-            let mut attempt: u32 = 0;
 
             let result: CirrusResult<(reqwest::header::HeaderMap, bytes::Bytes)> = loop {
                 let mut request = self
                     .client
                     .request(method.clone(), &url)
-                    .bearer_auth(&token_str)
+                    .bearer_auth(&*token)
                     .header(reqwest::header::ACCEPT, accept);
                 if let Some(q) = query {
                     request = request.query(q);
@@ -767,9 +767,9 @@ impl Cirrus {
                     target: "cirrus::auth",
                     "received 401; invalidating cached token and retrying once",
                 );
-                self.auth.invalidate(&token_str).await;
+                self.auth.invalidate(&token).await;
                 let fresh = self.auth.access_token().await?;
-                if *fresh == token_str {
+                if *fresh == *token {
                     tracing::warn!(
                         target: "cirrus::auth",
                         "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
@@ -802,16 +802,15 @@ impl Cirrus {
     ) -> CirrusResult<(u16, bytes::Bytes)> {
         let url = self.resolve_url(path);
         let mut auth_retried = false;
+        let mut attempt: u32 = 0;
         loop {
             let token = self.auth.access_token().await?;
-            let token_str = token.to_string();
-            let mut attempt: u32 = 0;
 
             let result: CirrusResult<(u16, bytes::Bytes)> = loop {
                 let mut request = self
                     .client
                     .request(method.clone(), &url)
-                    .bearer_auth(&token_str);
+                    .bearer_auth(&*token);
                 for (name, value) in extra_headers {
                     request = request.header(*name, *value);
                 }
@@ -866,9 +865,9 @@ impl Cirrus {
                     target: "cirrus::auth",
                     "received 401; invalidating cached token and retrying once",
                 );
-                self.auth.invalidate(&token_str).await;
+                self.auth.invalidate(&token).await;
                 let fresh = self.auth.access_token().await?;
-                if *fresh == token_str {
+                if *fresh == *token {
                     tracing::warn!(
                         target: "cirrus::auth",
                         "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",

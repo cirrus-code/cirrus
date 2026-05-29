@@ -15,10 +15,19 @@ use std::borrow::Cow;
 /// Once the token expires, requests will start failing with a 401
 /// `INVALID_SESSION_ID` from Salesforce. This type does not refresh;
 /// pair it with a flow that does (or rebuild the client) to recover.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct StaticTokenAuth {
     access_token: String,
     instance_url: String,
+}
+
+impl std::fmt::Debug for StaticTokenAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StaticTokenAuth")
+            .field("access_token", &"[redacted]")
+            .field("instance_url", &self.instance_url)
+            .finish()
+    }
 }
 
 impl StaticTokenAuth {

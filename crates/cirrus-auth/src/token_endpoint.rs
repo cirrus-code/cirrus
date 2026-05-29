@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 /// - `signature` / `id` / `token_type` — present on every successful
 ///   flow except where Salesforce explicitly omits (e.g. some on-behalf-of
 ///   exchanges).
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub(super) struct TokenResponse {
     pub(super) access_token: String,
     pub(super) instance_url: String,
@@ -56,22 +56,57 @@ pub(super) struct TokenResponse {
     /// (some public-client variants).
     #[serde(default)]
     pub(super) signature: Option<String>,
-    /// Always `"Bearer"` for all OAuth 2.0 flows. Parsed for
-    /// completeness — callers haven't needed to inspect it so far, so
-    /// we don't currently propagate it to session structs. The
-    /// `#[allow]` keeps clippy quiet without dropping the field
-    /// (re-adding it would be a breaking change to the parsed shape if
-    /// Salesforce ever sets it to something other than "Bearer").
+    /// Always `"Bearer"` for the OAuth 2.0 flows Salesforce exposes.
+    /// Parsed defensively so a future divergence wouldn't break the
+    /// deserializer; not propagated onto session structs.
     #[serde(default)]
     #[allow(dead_code)]
     pub(super) token_type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+// Redact every secret-bearing field. The `id`, `issued_at`, `scope`,
+// `token_type`, and `instance_url` fields are non-sensitive — emit them
+// verbatim so debug output stays useful.
+impl std::fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &"[redacted]")
+            .field("instance_url", &self.instance_url)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field("id_token", &self.id_token.as_ref().map(|_| "[redacted]"))
+            .field("scope", &self.scope)
+            .field("issued_at", &self.issued_at)
+            .field("id", &self.id)
+            .field("signature", &self.signature.as_ref().map(|_| "[redacted]"))
+            .field("token_type", &self.token_type)
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
 struct OAuthErrorResponse {
     error: String,
     #[serde(default)]
     error_description: Option<String>,
+}
+
+// `error_description` is server-supplied free text and has historically
+// contained partial token material in some Salesforce error paths.
+// Redact the description so the OAuth error code is the only thing that
+// surfaces in `{:?}`.
+impl std::fmt::Debug for OAuthErrorResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthErrorResponse")
+            .field("error", &self.error)
+            .field(
+                "error_description",
+                &self.error_description.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 /// POSTs a token-exchange form body to `{login_url}/services/oauth2/token`

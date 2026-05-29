@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/cirrus", "crates/cirrus-auth"]
+members = ["crates/cirrus", "crates/cirrus-auth", "crates/cirrus-metadata"]
 
 [workspace.package]
 edition = "2024"
@@ -13,7 +13,8 @@ homepage = "https://github.com/cirrus-code/cirrus"
 # Workspace members. The `version` field is required so dependent
 # crates can be published to crates.io — Cargo uses `path` for local
 # workspace builds and `version` for the published manifest.
-cirrus-auth = { path = "crates/cirrus-auth", version = "0.2.1" }
+cirrus-auth = { path = "crates/cirrus-auth", version = "0.2.2" }
+cirrus-metadata = { path = "crates/cirrus-metadata", version = "0.1.0" }
 
 # Runtime / HTTP
 reqwest = { version = "0.13", default-features = false, features = ["form", "json", "multipart", "query", "rustls", "charset", "system-proxy"] }
@@ -27,6 +28,7 @@ httpdate = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_urlencoded = "0.7"
+quick-xml = { version = "0.37", features = ["serialize"] }
 
 # Errors / async / utility
 thiserror = "2.0"
@@ -46,6 +48,10 @@ jsonwebtoken = { version = "10.3", default-features = false, features = ["use_pe
 dotenvy = "0.15"
 proptest = "1.6"
 wiremock = "0.6"
+# `zip` is used only by integration tests that build a minimal deploy
+# zip (cirrus-metadata). Pulling it into dev-dependencies keeps the
+# published crate's dependency surface unchanged.
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 [workspace.lints.clippy]
 await_holding_invalid_type = "deny"

@@ -41,13 +41,16 @@ pub const SANDBOX_LOGIN_URL: &str = "https://test.salesforce.com";
 /// Default cache TTL for an access token after it's issued.
 const DEFAULT_TOKEN_TTL: Duration = Duration::from_secs(30 * 60);
 
-/// JWT validity window. The Salesforce help docs document a 3-minute
-/// clock-skew buffer applied to the `exp` claim; this 3-minute lifetime
-/// fits comfortably inside any documented authorization-server bound and
-/// keeps the assertion short-lived if it leaks.
-const JWT_VALIDITY_SECS: i64 = 180;
+/// JWT validity window. Salesforce rejects assertions whose `exp` is
+/// more than 3 minutes ahead of *its* clock. Setting `exp = now + 180`
+/// leaves zero slack: any clock skew where the local host runs even
+/// slightly ahead of Salesforce will push `exp` over the ceiling and
+/// produce `invalid_grant`. The 10-second buffer below keeps the
+/// assertion short-lived while tolerating the kind of skew typical of
+/// NTP-synced machines.
+const JWT_VALIDITY_SECS: i64 = 170;
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 struct JwtClaims {
     iss: String,
     sub: String,
@@ -55,10 +58,33 @@ struct JwtClaims {
     exp: i64,
 }
 
-#[derive(Debug, Clone)]
+// `iss` is the Connected App consumer key (a credential identifier) and
+// `sub` is the Salesforce username (PII). Redact both so a stray
+// `{:?}` in error-handling code never leaks them.
+impl std::fmt::Debug for JwtClaims {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JwtClaims")
+            .field("iss", &"[redacted]")
+            .field("sub", &"[redacted]")
+            .field("aud", &self.aud)
+            .field("exp", &self.exp)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 struct CachedToken {
     access_token: String,
     expires_at: Instant,
+}
+
+impl std::fmt::Debug for CachedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachedToken")
+            .field("access_token", &"[redacted]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 /// JWT Bearer flow auth session.

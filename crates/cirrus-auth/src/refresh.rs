@@ -43,10 +43,19 @@ pub const SANDBOX_LOGIN_URL: &str = "https://test.salesforce.com";
 /// Default cache TTL for an access token after it's issued.
 const DEFAULT_TOKEN_TTL: Duration = Duration::from_secs(30 * 60);
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct CachedToken {
     access_token: String,
     expires_at: Instant,
+}
+
+impl std::fmt::Debug for CachedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachedToken")
+            .field("access_token", &"[redacted]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 /// Refresh-token-grant auth session.

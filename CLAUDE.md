@@ -7,16 +7,40 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `cirrus` is a family of Rust crates for the Salesforce platform (unaffiliated with Salesforce). Pre-1.0.
 
 Workspace members:
-- **`cirrus`** — HTTP client for the Salesforce REST API. **Published**: `0.2.0` is on crates.io as the original single-crate release.
-- **`cirrus-auth`** — OAuth 2.0 flows + the `AuthSession` trait. **Published**: `0.1.0` is on crates.io. Re-exported by `cirrus` as `cirrus::auth` so end users don't add it as an explicit dependency. Other sibling crates (planned: `cirrus-metadata`) depend on it directly so they don't pull in the REST client.
 
-Shipped surface:
-- All five priority OAuth flows (JWT, Refresh, Client Credentials, Web Server PKCE, Token Exchange) + Static — in `cirrus-auth`.
+- **`cirrus`** — HTTP client for the Salesforce REST API. The original single-crate release; now the workspace's REST surface.
+- **`cirrus-auth`** — OAuth 2.0 flows + the `AuthSession` trait. Re-exported by both `cirrus` and `cirrus-metadata` so end users don't add it as an explicit dependency. Has no dependency on its consumers, which keeps siblings free to depend on it without pulling in the REST client.
+- **`cirrus-metadata`** — Salesforce Metadata API (SOAP) client: file-based deploy/retrieve, CRUD-based calls, and the utility surface (`listMetadata`, `describeMetadata`, `describeValueType`).
+
+Current versions are tracked in each crate's `Cargo.toml`; crates.io is the source of truth for what's published.
+
+### Shipped surface
+
+`cirrus`:
 - Phase 1: versions, limits, describe (global + per-object), sObject CRUD, query/queryAll/queryMore, search/parameterizedSearch.
 - Phase 2: composite/batch, composite/tree, composite/sobjects (incl. `retrieve_with_body`), generic `/composite`, Bulk 2.0 (ingest + query), Apex REST passthrough, Tooling API, Event Monitoring.
+- Phase 3: Metadata REST API (`Cirrus::metadata()` — the four `deployRequest` endpoints). The rest of the Metadata API surface is SOAP-only and lives in `cirrus-metadata`.
 - Cross-cutting: open-ended client escape hatch, pagination stream (`futures::Stream`), retry + backoff policy, `Sforce-Limit-Info` surfacing, auto-refresh on 401, multipart blob uploads.
 
-Tests: 279 unit + 17 doctest, all wiremock-backed, fast (<5s wall). No SOAP, no legacy auth (username-password OAuth, etc.).
+`cirrus-auth`:
+- All five priority OAuth flows: JWT Bearer (RFC 7523), Refresh Token (RFC 6749 §6), Client Credentials (RFC 6749 §4.4), Web Server with PKCE (RFC 6749 §4.1 + RFC 7636), Token Exchange (RFC 8693 + Salesforce hybrid mobile-app grant).
+- `StaticTokenAuth` for paste-from-`sf-org-display` workflows and tests.
+- Shared `AuthSession` trait, `SharedAuth = Arc<dyn AuthSession>` alias, automatic compare-and-swap on `invalidate`.
+
+`cirrus-metadata`:
+- File-based: `deploy`, `check_deploy_status`, `cancel_deploy`, `deploy_recent_validation`, `retrieve`, `check_retrieve_status`, plus `wait_for_deploy` / `wait_for_retrieve` polling helpers.
+- CRUD-based: `create_metadata`, `read_metadata`, `update_metadata`, `upsert_metadata`, `delete_metadata`, `rename_metadata` (up to 10 components per call, per Salesforce's contract).
+- Utility: `list_metadata`, `describe_metadata`, `describe_value_type`.
+- Typed `package.xml` via `PackageManifest` builder over the full `MetadataType` taxonomy.
+- Open-ended escape hatch (`MetadataClient::request_builder()`), retry policy, and `INVALID_SESSION_ID` auto-refresh against the configured `AuthSession`.
+
+Tests: ~400 unit + ~20 doctest workspace-wide, all wiremock-backed, fast (<10s wall). Integration tests against real orgs are `#[ignore]`-gated and live under each crate's `tests/integration/`.
+
+### Project-wide rules
+
+- **No legacy or deprecated Salesforce APIs.** Skip anything Salesforce marks legacy or deprecated: Bulk 1.0, SOAP login, username-password OAuth, pre-API-31 CRUD calls, etc. This applies across every crate.
+- **No org-specific types.** The SDK never models concrete sObjects like `Account` or `Contact`. Record types are caller-supplied generics; only platform-contract envelopes (response shapes Salesforce defines) are typed.
+- **Doc-driven wire shapes.** Test fixtures must match Salesforce's documented examples, not prior assumptions about the wire shape. See [Test conventions](#test-conventions).
 
 ## Architecture
 
@@ -43,91 +67,110 @@ Four internal send paths cover every wire shape we've needed. Pick by request/re
 
 If you find yourself wanting a fifth, first check whether the existing four would work with caller-side adaptation.
 
-### Handler module conventions
+### Handler module conventions (cirrus)
 
-- One module per platform-level surface: `crates/cirrus/src/handlers/{sobjects, query, search, composite, bulk, tooling, apex, event_monitoring, limits, versions}.rs`.
-- Handler struct holds `&'a Cirrus`; constructed via top-level methods on `Cirrus` (e.g., `sf.tooling()`, `sf.bulk().query()`, `sf.sobject("Account")`).
+- One module per platform-level surface: `crates/cirrus/src/handlers/{sobjects, query, search, composite, bulk, tooling, apex, event_monitoring, metadata, limits, versions}.rs`.
+- Handler struct holds `&'a Cirrus`; constructed via top-level methods on `Cirrus` (e.g., `sf.tooling()`, `sf.bulk().query()`, `sf.sobject("Account")`, `sf.metadata()`).
 - Methods that return records expose two variants: the default (returns `serde_json::Value`) and `_as::<R>` for typed deserialization.
-- **Never** model org-specific types. Platform envelopes (response shapes Salesforce defines) live in `crates/cirrus/src/response.rs` and are re-exported at the crate root; record types are caller-supplied via the generic `R: DeserializeOwned`.
+- Platform envelopes live in `crates/cirrus/src/response.rs` and are re-exported at the crate root.
 - Pagination support: handlers with paginated GETs add `_stream` / `_stream_as` variants returning `pagination::Records<R>` (a `futures::Stream`). See `query`/`tooling.query` for the pattern.
 
 ### Auth crate boundary
 
-- `crates/cirrus-auth/src/` houses every OAuth flow plus the `AuthSession` trait. It owns its own error type, `AuthError` / `AuthResult` — the crate has no dependency on `cirrus`, which is what lets future siblings like `cirrus-metadata` depend on it directly.
-- `cirrus` re-exports the whole crate via `pub use cirrus_auth as auth;`, plus the convenience re-exports `cirrus::{AuthSession, SharedAuth, AuthError}`. End users keep writing `use cirrus::auth::JwtAuth` — the move is transparent.
-- `CirrusError::Auth(#[from] AuthError)` lets `?` propagate auth failures from `self.auth.access_token().await?` in handlers without conversions. Pattern-match on `CirrusError::Auth(AuthError::OAuth { .. })` etc. for auth-flavored errors.
-- When adding a new flow or modifying auth code, work in `cirrus-auth` — do **not** add auth code back into `cirrus`. The split is load-bearing for the upcoming `cirrus-metadata` extraction.
+- `crates/cirrus-auth/src/` houses every OAuth flow plus the `AuthSession` trait. It owns its own error type, `AuthError` / `AuthResult`, and has no dependency on `cirrus` or `cirrus-metadata` — that's what lets siblings depend on it directly.
+- Both `cirrus` and `cirrus-metadata` re-export the entire auth crate (as `cirrus::auth` and `cirrus_metadata::auth` respectively) and pull `AuthError` / `AuthSession` / `SharedAuth` to the crate root. End users write `use cirrus::auth::JwtAuth;` without an explicit `cirrus-auth` dependency.
+- `CirrusError::Auth(#[from] AuthError)` and `MetadataError::Auth(#[from] AuthError)` let `?` propagate auth failures from `self.auth.access_token().await?` without conversions. Pattern-match on `CirrusError::Auth(AuthError::OAuth { .. })` for auth-flavored errors.
+- When adding a new flow or modifying auth code, work in `cirrus-auth` — do **not** add auth code back into the consumer crates.
+- Sensitive fields (`access_token`, `refresh_token`, `id_token`, JWT `iss`/`sub`, OAuth `signature`) have custom `Debug` impls that emit `[redacted]`. Preserve this when adding new types that carry secrets.
+
+### cirrus-metadata architecture (SOAP)
+
+The Metadata API has two surfaces: a small REST slice covering `deployRequest` (in `cirrus::handlers::metadata`) and a much larger SOAP surface for everything else (`retrieve`, `listMetadata`, `describeMetadata`, the CRUD-based calls, etc.). `cirrus-metadata` covers the SOAP surface — SOAP is the canonical Metadata API, not a legacy holdout.
+
+- **Transport core (`transport.rs`):** `SoapOperation` is the trait/dispatch path analogous to `Cirrus::send`. Every typed handler builds a `SoapOperation` and routes through `MetadataClient::call`. Retry + `INVALID_SESSION_ID` refresh wrap the call.
+- **Envelopes (`envelope.rs`):** wraps the operation body with SOAP namespaces, `<SessionHeader>` (the Metadata API expects the bearer token inside the envelope, not on the `Authorization` header — `request_builder()` deliberately does not inject auth), and the action header. Property-tested for XML round-trip safety.
+- **Handlers (`handlers/{file_based, crud, utility}.rs`):** add methods directly to `MetadataClient` via inherent `impl` blocks so callers see `md.deploy(...)`, `md.list_metadata(...)`, etc. at the top level — no `.utility()` / `.crud()` accessor pattern.
+- **Package manifests (`package_manifest.rs`):** typed builder for `package.xml` with the full `MetadataType` taxonomy; round-trips through `quick-xml`. Used as `RetrieveRequest::unpackaged`.
+- **Caller-supplied metadata bodies:** the 200+ concrete metadata types (`CustomObject`, `ApexClass`, `Flow`, …) are **not** modeled. Callers pass XML strings or `serde`-generic bodies via the `_as::<T>` variants of the CRUD methods. Only platform envelopes are typed.
 
 ## Test conventions
 
-- Wiremock for handler tests; full suite runs in ~0.5s wall time. **No live network in tests.**
-- Mock JSON fixtures should cite specific doc pages. When an audit found `BulkQueryJob.query` was a bogus field (Salesforce never returns it), the fix was to stop matching the mock to our wrong assumption and start matching the doc's actual example. Doc-driven > prior-knowledge.
-- Each new handler ships with wiremock coverage of: happy path, error array, edge cases documented in the wire shape (partial-success semantics, header cursors, etc.).
-- If you can't verify a wire-shape claim against docs, flag it explicitly in code — see `ExecuteAnonymousResult` in `crates/cirrus/src/response.rs` for the established pattern ("Wire-shape provenance" docstring).
+- Wiremock for handler tests; **no live network in the default test suite.**
+- Mock JSON / XML fixtures must cite specific doc pages. A historical regression (`BulkQueryJob.query` modeled despite Salesforce never returning it) was caused by matching mocks to prior assumptions instead of docs. **Doc-driven > prior-knowledge.**
+- Each new handler ships with wiremock coverage of: happy path, error array / SOAP fault, edge cases documented in the wire shape (partial-success semantics, header cursors, etc.).
+- If you can't verify a wire-shape claim against docs, flag it explicitly in code — see `ExecuteAnonymousResult` in `crates/cirrus/src/response.rs` for the established "Wire-shape provenance" docstring pattern.
 
 ### Integration tests
 
-Live tests against a real Salesforce sandbox / dev / scratch org live under `crates/cirrus/tests/integration.rs` (one binary, submodules under `crates/cirrus/tests/integration/`). All `#[ignore]`-gated so they don't run by default.
+Live tests against a real Salesforce sandbox / Developer Edition / scratch org live under `crates/<crate>/tests/integration.rs` (one binary per crate, submodules under `crates/<crate>/tests/integration/`). All `#[ignore]`-gated so they don't run by default. The three crates share the workspace-root `.env`.
 
 ```bash
 # Configure once: copy .env.example to .env, fill in the values
 cp .env.example .env
 
-# Run all integration tests (sequential — they share org state)
-cargo nextest run --test integration --run-ignored only -- --test-threads=1
+# Run a crate's integration suite (sequential — they share org state)
+cargo nextest run -p cirrus           --test integration --run-ignored only -- --test-threads=1
+cargo nextest run -p cirrus-auth      --test integration --run-ignored only -- --test-threads=1
+cargo nextest run -p cirrus-metadata  --test integration --run-ignored only -- --test-threads=1
 ```
 
-The harness (`crates/cirrus/tests/integration/common.rs`) refuses to run unless `INSTANCE_URL` matches a known sandbox/dev/scratch My Domain pattern: `.sandbox.`, `.develop.`, `.scratch.`, or `.trailblaze.` infix before `.my.salesforce.com`. The `.trailblaze.` partition is used by free Developer Edition orgs from developer.salesforce.com signup (subdomain ends in `-dev-ed`). Override with `CIRRUS_INTEGRATION_FORCE=1` only after verifying the target org is safe for destructive writes — the safe-list catches Enhanced Domains URLs but not legacy pre-Spring-'23 sandbox URLs, and Salesforce occasionally introduces new partition infixes (audit when adding orgs in unfamiliar shapes).
+The harness (`tests/integration/common.rs` in each crate) refuses to run unless `INSTANCE_URL` matches a known sandbox / Developer Edition / scratch My Domain pattern: `.sandbox.`, `.develop.`, `.scratch.`, or `.trailblaze.` infix before `.my.salesforce.com`. The `.trailblaze.` partition is used by free Developer Edition orgs from developer.salesforce.com signup (subdomain typically ends `-dev-ed`). Override with `CIRRUS_INTEGRATION_FORCE=1` only after verifying the target org is safe for destructive writes — the safe-list catches Enhanced Domains URLs but not legacy pre-Spring-'23 sandbox URLs, and Salesforce occasionally introduces new partition infixes (audit when adding orgs in unfamiliar shapes).
 
 Auth supports two paths: paste a static token from `sf org display`, or configure JWT bearer flow with a connected app + private key. Static-token mode is the easy bootstrap; JWT exercises the full auth flow.
 
 Don't add network-touching tests to the default (`cargo test`) suite — those should always be wiremock-backed and offline.
 
-## Memory and cross-session notes
-
-Persistent notes the user has flagged for future sessions live in `~/.claude/projects/-home-ryan-Projects-cirrus/memory/`. Notable entries:
-
-- **No legacy or deprecated Salesforce APIs.** Skip anything Salesforce marks legacy (Bulk 1.0, SOAP login, username-password OAuth, etc.).
-- **Doc cache goes in `~/.cache/cirrus/sf-docs/`**, not `/tmp` (NixOS tmpfs wipes /tmp on reboot).
-- **The Salesforce docs content API** — see `reference_sf_doc_api.md` for endpoint details and the help.salesforce.com gap.
-
 ## Repository Layout
 
-This is a **Cargo workspace**. The repo root holds workspace-level config (`Cargo.toml` workspace manifest, `clippy.toml`, `deny.toml`, `flake.nix`, `rust-toolchain.toml`, cross-crate `docs/` and `scripts/`). Each member crate lives under `crates/<name>/` with the standard `src/lib.rs` layout.
+This is a **Cargo workspace**. The repo root holds workspace-level config (`Cargo.toml` workspace manifest, `clippy.toml`, `deny.toml`, `flake.nix`, `rust-toolchain.toml`) plus the `scripts/` directory. Each member crate lives under `crates/<name>/` with the standard `src/lib.rs` layout.
 
 ```
 cirrus/
 ├── Cargo.toml                  # [workspace] manifest, [workspace.dependencies], [workspace.lints]
 ├── clippy.toml, deny.toml      # apply to all workspace members
-├── docs/, scripts/             # cross-crate
+├── flake.nix, flake.lock       # Nix dev shell
+├── rust-toolchain.toml         # toolchain pin
+├── scripts/                    # cross-crate utility scripts
 └── crates/
-    ├── cirrus/                 # the REST client crate
+    ├── cirrus/                 # REST client
     │   ├── Cargo.toml          # depends on cirrus-auth (workspace dep)
     │   ├── src/
-    │   ├── tests/
+    │   ├── tests/              # unit + integration (gated)
     │   └── examples/
-    └── cirrus-auth/            # OAuth flows + AuthSession trait
-        ├── Cargo.toml
+    ├── cirrus-auth/            # OAuth flows + AuthSession trait
+    │   ├── Cargo.toml          # no dependency on cirrus or cirrus-metadata
+    │   ├── src/
+    │   │   ├── lib.rs          # AuthSession trait, re-exports
+    │   │   ├── error.rs        # AuthError / AuthResult
+    │   │   ├── static_token.rs
+    │   │   ├── jwt.rs
+    │   │   ├── refresh.rs
+    │   │   ├── client_credentials.rs
+    │   │   ├── web_server.rs
+    │   │   ├── token_exchange.rs
+    │   │   └── token_endpoint.rs   # shared OAuth POST helper
+    │   └── tests/fixtures/     # JWT RSA test key
+    └── cirrus-metadata/        # Salesforce SOAP Metadata API client
+        ├── Cargo.toml          # depends on cirrus-auth, NOT on cirrus
         ├── src/
-        │   ├── lib.rs          # AuthSession trait, re-exports
-        │   ├── error.rs        # AuthError / AuthResult
-        │   ├── static_token.rs
-        │   ├── jwt.rs
-        │   ├── refresh.rs
-        │   ├── client_credentials.rs
-        │   ├── web_server.rs
-        │   ├── token_exchange.rs
-        │   └── token_endpoint.rs   # shared OAuth POST helper
-        └── tests/fixtures/     # JWT RSA test key
+        │   ├── lib.rs          # MetadataClient + builder, re-exports
+        │   ├── transport.rs    # SoapOperation trait + dispatch
+        │   ├── envelope.rs     # SOAP envelope builder
+        │   ├── package_manifest.rs
+        │   ├── result.rs       # typed response envelopes
+        │   ├── error.rs        # MetadataError / MetadataResult / SoapFault
+        │   ├── retry.rs        # RetryPolicy
+        │   └── handlers/{file_based,crud,utility}.rs
+        └── tests/              # unit + integration (gated)
 ```
 
-Shared dependency versions are declared in `[workspace.dependencies]` (including `cirrus-auth = { path = "crates/cirrus-auth" }`) and inherited per-crate via `dep.workspace = true`. Lint denials live in `[workspace.lints.clippy]` and are activated per-crate via `[lints] workspace = true`. New sibling crates inherit both automatically.
+Shared dependency versions are declared in `[workspace.dependencies]` (including path-and-version entries for `cirrus-auth` and `cirrus-metadata`) and inherited per-crate via `dep.workspace = true`. Lint denials live in `[workspace.lints.clippy]` and are activated per-crate via `[lints] workspace = true`. New sibling crates inherit both automatically.
 
 ## Development Environment
 
 The project uses a Nix flake with `direnv` (`.envrc` is `use flake`). The dev shell provides `rustc`/`cargo` (stable), `clippy`, `rust-analyzer`, `cargo-nextest`, and `cargo-release`. Outside Nix, the `rust-toolchain.toml` pins channel `stable` with `clippy` and `rustfmt`.
 
-Edition is **2024** — code may use features unavailable in older editions.
+Edition is **2024** — code may use features unavailable in older editions. The workspace resolver is `"3"` (requires Cargo ≥ 1.85).
 
 ## Common Commands
 
@@ -137,11 +180,13 @@ All commands run from the workspace root unless noted.
 cargo build --workspace                    # Build all member crates
 cargo nextest run --workspace              # Run all tests (preferred — flake provides nextest)
 cargo test --workspace                     # Fallback test runner
-cargo nextest run -p cirrus <pattern>      # Run a single test by name substring in a specific crate
+cargo nextest run -p <crate> <pattern>     # Run a single test by name substring in a specific crate
+cargo test --doc --workspace               # Run doctests
 cargo clippy --all-targets --workspace     # Lint (CI-equivalent — many rules are `deny`)
 cargo fmt --all                            # Format every crate
+cargo package -p <crate> --allow-dirty     # Pre-flight publish check (resolves against crates.io index)
 nix build                                  # Reproducible package build via the flake
-cargo release -p cirrus <level>            # Release a specific crate; signs commits/tags, pushes to origin, only from main
+cargo release -p <crate> <level>           # Release a specific crate; signs commits/tags, pushes to origin, only from main
 ```
 
 ## Coding Constraints (enforced by lints)
@@ -149,7 +194,8 @@ cargo release -p cirrus <level>            # Release a specific crate; signs com
 The workspace `Cargo.toml` sets these clippy lints to `deny` via `[workspace.lints.clippy]` — every member crate inherits them. Code that trips them will fail `cargo clippy`:
 
 - `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented` — no panicking constructs; propagate errors with `Result`.
-- `dbg_macro`, `print_stdout`, `print_stderr` — no ad-hoc stdout/stderr printing. Use a logging facade (e.g. `tracing`/`log`) when one is added.
+- `dbg_macro`, `print_stdout`, `print_stderr` — no ad-hoc stdout/stderr printing. Use `tracing` instead.
+- `await_holding_lock`, `await_holding_refcell_ref`, `await_holding_invalid_type` — async correctness.
 - `disallowed_types`, `disallowed_methods` — see `clippy.toml`.
 
 `clippy.toml` bans the following in favor of replacements:
@@ -162,9 +208,29 @@ The workspace `Cargo.toml` sets these clippy lints to `deny` via `[workspace.lin
 
 ## Release Process
 
-`[package.metadata.release]` in `crates/cirrus/Cargo.toml` is configured for `cargo-release`:
+Each crate has its own `[package.metadata.release]` for `cargo-release`. Common config:
 
 - Releases only from `main`.
 - Commits and tags are GPG-signed.
-- Tags use the `v{{version}}` format and are pushed to `origin`.
+- Tags are pushed to `origin`.
 - `publish = true` — releases push to crates.io.
+
+Tag prefixes are set per-crate to avoid collisions:
+
+| Crate | Tag prefix | Example |
+|---|---|---|
+| `cirrus` | `v` | `v0.2.1` (grandfathered from the pre-workspace era) |
+| `cirrus-auth` | `cirrus-auth-v` | `cirrus-auth-v0.2.2` |
+| `cirrus-metadata` | `cirrus-metadata-v` | `cirrus-metadata-v0.1.0` |
+
+Only `crates/cirrus/Cargo.toml` carries a `pre-release-replacements` entry — it rewrites the `cirrus = "x.y.z"` snippet in its README on release.
+
+### Publish ordering
+
+`cargo-release` does **not** sequence the workspace. Each `cargo release -p <crate>` is an independent invocation. Because `cargo package` resolves dependencies against the crates.io *index* (path deps are stripped from the published manifest, leaving only the `version` constraint), downstream crates cannot be packaged until their workspace deps are live on crates.io. Always publish in dependency order:
+
+```
+cirrus-auth → cirrus → cirrus-metadata
+```
+
+If you bump `cirrus-auth`, also bump the `[workspace.dependencies] cirrus-auth = { ..., version = "..." }` pin in the root `Cargo.toml`. Same for `cirrus-metadata`.

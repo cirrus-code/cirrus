@@ -22,7 +22,7 @@
 
 use crate::AuthSession;
 use crate::error::{AuthError, AuthResult};
-use crate::token_endpoint::{check_instance_url, exchange};
+use crate::token_endpoint::{check_instance_url, exchange, token_is_fresh};
 use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
@@ -175,9 +175,10 @@ impl JwtAuth {
         let token = exchange(&self.http, &self.login_url, &body).await?;
         check_instance_url(&self.instance_url, &token)?;
 
+        let expires_at = token.cache_expiry(self.token_ttl);
         Ok(CachedToken {
             access_token: token.access_token,
-            expires_at: Instant::now() + self.token_ttl,
+            expires_at,
         })
     }
 }
@@ -189,7 +190,7 @@ impl AuthSession for JwtAuth {
         {
             let guard = self.cached.read().await;
             if let Some(cached) = guard.as_ref()
-                && cached.expires_at > Instant::now()
+                && token_is_fresh(cached.expires_at)
             {
                 return Ok(Cow::Owned(cached.access_token.clone()));
             }
@@ -198,7 +199,7 @@ impl AuthSession for JwtAuth {
         // Slow path — write lock, double-check, mint.
         let mut guard = self.cached.write().await;
         if let Some(cached) = guard.as_ref()
-            && cached.expires_at > Instant::now()
+            && token_is_fresh(cached.expires_at)
         {
             return Ok(Cow::Owned(cached.access_token.clone()));
         }

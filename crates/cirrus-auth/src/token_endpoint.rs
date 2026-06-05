@@ -11,6 +11,15 @@
 
 use crate::error::{AuthError, AuthResult};
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
+
+/// Margin subtracted from a cached token's lifetime when deciding whether
+/// it is still usable. A token whose real expiry is within this window is
+/// treated as already expired and re-minted proactively, so an in-flight
+/// request never lands at Salesforce with a token that expired in transit.
+/// This trades a slightly earlier refresh for eliminating a class of
+/// avoidable 401 round-trips at every TTL boundary.
+pub(super) const EXPIRY_MARGIN: Duration = Duration::from_secs(60);
 
 /// Successful token-endpoint response.
 ///
@@ -28,6 +37,10 @@ use serde::{Deserialize, Serialize};
 /// - `scope` — present when the granted scope set differs from the
 ///   requested set, or always on some flows. Treat as best-effort.
 /// - `issued_at` — milliseconds since epoch as a *string*, not a number.
+/// - `expires_in` — token lifetime in seconds (RFC 6749 §5.1,
+///   RECOMMENDED). Salesforce omits it on most flows; when present we
+///   prefer it over the configured cache TTL. Modeled as `Option<u64>` +
+///   `default` so its absence never breaks parsing.
 /// - `signature` / `id` / `token_type` — present on every successful
 ///   flow except where Salesforce explicitly omits (e.g. some on-behalf-of
 ///   exchanges).
@@ -35,6 +48,11 @@ use serde::{Deserialize, Serialize};
 pub(super) struct TokenResponse {
     pub(super) access_token: String,
     pub(super) instance_url: String,
+    /// Token lifetime in seconds, when the endpoint advertises one
+    /// (RFC 6749 §5.1). Preferred over the static cache TTL via
+    /// [`TokenResponse::cache_expiry`] when present.
+    #[serde(default)]
+    pub(super) expires_in: Option<u64>,
     #[serde(default)]
     pub(super) refresh_token: Option<String>,
     #[serde(default)]
@@ -64,6 +82,29 @@ pub(super) struct TokenResponse {
     pub(super) token_type: Option<String>,
 }
 
+impl TokenResponse {
+    /// Computes the cache-expiry [`Instant`] for this freshly-issued token.
+    ///
+    /// Prefers the server-advertised `expires_in` (RFC 6749 §5.1) when
+    /// present, falling back to the caller's configured `fallback_ttl`
+    /// otherwise. Shared by every caching flow so they stay consistent.
+    pub(super) fn cache_expiry(&self, fallback_ttl: Duration) -> Instant {
+        let ttl = self
+            .expires_in
+            .map(Duration::from_secs)
+            .unwrap_or(fallback_ttl);
+        Instant::now() + ttl
+    }
+}
+
+/// Whether a cached token minted to expire at `expires_at` is still safe to
+/// use, accounting for the [`EXPIRY_MARGIN`] refresh window. The JWT,
+/// refresh, and client-credentials flows all call this, so they apply an
+/// identical margin.
+pub(super) fn token_is_fresh(expires_at: Instant) -> bool {
+    expires_at > Instant::now() + EXPIRY_MARGIN
+}
+
 // Redact every secret-bearing field. The `id`, `issued_at`, `scope`,
 // `token_type`, and `instance_url` fields are non-sensitive — emit them
 // verbatim so debug output stays useful.
@@ -72,6 +113,7 @@ impl std::fmt::Debug for TokenResponse {
         f.debug_struct("TokenResponse")
             .field("access_token", &"[redacted]")
             .field("instance_url", &self.instance_url)
+            .field("expires_in", &self.expires_in)
             .field(
                 "refresh_token",
                 &self.refresh_token.as_ref().map(|_| "[redacted]"),
@@ -136,9 +178,20 @@ where
                 error_description: oauth_err.error_description,
             });
         }
+        // The body didn't match the OAuth error shape. Do NOT fold it into
+        // the error message: non-standard token-endpoint bodies (HTML error
+        // pages, proxies, reflected request parameters) can echo token
+        // material, and the error message flows into logs. Surface only the
+        // status; expose the body solely at TRACE, which is off by default
+        // and a deliberate per-target opt-in for debugging.
+        tracing::trace!(
+            target: "cirrus::auth",
+            status,
+            body = %String::from_utf8_lossy(&bytes),
+            "token endpoint returned a non-2xx body that did not parse as an OAuth error",
+        );
         return Err(AuthError::Other(format!(
-            "token endpoint returned status {status}: {}",
-            String::from_utf8_lossy(&bytes)
+            "token endpoint returned status {status} with an unrecognized error body"
         )));
     }
 

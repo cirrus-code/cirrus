@@ -28,7 +28,7 @@
 
 use crate::AuthSession;
 use crate::error::{AuthError, AuthResult};
-use crate::token_endpoint::{check_instance_url, exchange};
+use crate::token_endpoint::{check_instance_url, exchange, token_is_fresh};
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
@@ -135,9 +135,10 @@ impl RefreshTokenAuth {
         let token = exchange(&self.http, &self.login_url, &body).await?;
         check_instance_url(&self.instance_url, &token)?;
 
+        let expires_at = token.cache_expiry(self.token_ttl);
         Ok(CachedToken {
             access_token: token.access_token,
-            expires_at: Instant::now() + self.token_ttl,
+            expires_at,
         })
     }
 }
@@ -149,7 +150,7 @@ impl AuthSession for RefreshTokenAuth {
         {
             let guard = self.cached.read().await;
             if let Some(cached) = guard.as_ref()
-                && cached.expires_at > Instant::now()
+                && token_is_fresh(cached.expires_at)
             {
                 return Ok(Cow::Owned(cached.access_token.clone()));
             }
@@ -158,7 +159,7 @@ impl AuthSession for RefreshTokenAuth {
         // Slow path — write lock, double-check, mint.
         let mut guard = self.cached.write().await;
         if let Some(cached) = guard.as_ref()
-            && cached.expires_at > Instant::now()
+            && token_is_fresh(cached.expires_at)
         {
             return Ok(Cow::Owned(cached.access_token.clone()));
         }
@@ -514,6 +515,39 @@ mod tests {
             }
             other => panic!("expected OAuth error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn non_oauth_error_body_is_not_echoed_in_error() {
+        // A non-2xx body that isn't the OAuth error shape (proxy HTML, etc.)
+        // must not be folded into the error message — it can reflect token
+        // material, and the message flows into logs. Only the status survives.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/services/oauth2/token"))
+            .respond_with(
+                ResponseTemplate::new(502)
+                    .set_body_string("<html>proxy error: upstream token=LEAKED_SECRET</html>"),
+            )
+            .mount(&server)
+            .await;
+
+        let auth = builder_with_required_fields()
+            .login_url(server.uri())
+            .build()
+            .unwrap();
+
+        let err = auth.access_token().await.unwrap_err();
+        match &err {
+            AuthError::Other(msg) => {
+                assert!(msg.contains("502"));
+                assert!(!msg.contains("LEAKED_SECRET"), "raw body leaked: {msg}");
+            }
+            other => panic!("expected Other, got {other:?}"),
+        }
+        // Neither Display nor Debug should surface the body either.
+        assert!(!format!("{err}").contains("LEAKED_SECRET"));
+        assert!(!format!("{err:?}").contains("LEAKED_SECRET"));
     }
 
     #[tokio::test]

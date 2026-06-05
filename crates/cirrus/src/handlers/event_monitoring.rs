@@ -123,10 +123,18 @@ impl EventMonitoringHandler<'_> {
     /// CSV is left to the caller (column sets are EventType-dependent;
     /// see the module-level docs).
     pub async fn download(&self, log_file_id: &str) -> CirrusResult<bytes::Bytes> {
-        let path = format!("sobjects/EventLogFile/{log_file_id}/LogFile");
+        // Percent-encode the record ID as its own path segment. `fetch_raw`
+        // resolves the resulting fully-qualified URL through passthrough
+        // mode, so the encoding is preserved.
+        let url = self.client.versioned_segments(&[
+            "sobjects",
+            "EventLogFile",
+            log_file_id,
+            "LogFile",
+        ])?;
         let (_headers, bytes) = self
             .client
-            .fetch_raw(reqwest::Method::GET, &path, CSV_ACCEPT, None)
+            .fetch_raw(reqwest::Method::GET, &url, CSV_ACCEPT, None)
             .await?;
         Ok(bytes)
     }
@@ -167,7 +175,7 @@ mod tests {
     use super::*;
     use crate::auth::StaticTokenAuth;
     use std::sync::Arc;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{header, method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn fixture(uri: String) -> Cirrus {
@@ -197,6 +205,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(&bytes[..], csv.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn download_percent_encodes_record_id() {
+        // A reserved character in the record ID must be percent-encoded into
+        // a single path segment rather than altering the path structure.
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"^/services/data/v66\.0/sobjects/EventLogFile/.+/LogFile$",
+            ))
+            .and(header("accept", "text/csv"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let bytes = sf
+            .event_monitoring()
+            .download("0AT/weird id")
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..], b"ok");
     }
 
     #[tokio::test]

@@ -206,6 +206,14 @@ The workspace `Cargo.toml` sets these clippy lints to `deny` via `[workspace.lin
 
 `camino` and `fs-err` are workspace dependencies, currently consumed by `cirrus-auth` (JWT key file loading). New crates that touch the filesystem should add them via `dep.workspace = true`.
 
+## Comment conventions
+
+Comments (both `//` and doc comments) describe the code as it stands, for the next person who reads it. Three rules:
+
+1. **Don't imply a development process.** Comments describe what the code *is* and *why*, not how it got there. Avoid change-narrative phrasing — "previously", "now uses", "no longer", "refactored to", "we changed this", "fixed a regression", "extracted from". A reader has no access to the prior state, so a comment framed as a diff is noise. Write the rationale declaratively: not "extracted this to avoid duplication" but "all N call sites route through this so the behavior lives in one place". Change history belongs in commit messages, not in the source.
+2. **Keep public doc comments crates.io-friendly.** `///` and `//!` on public items are published to docs.rs. Lead with behavior a *user* of the API cares about, not internal implementation detail. Don't reference private helpers, internal layering, or "the impl" in a way that only makes sense with the source open. Implementation notes that matter only to a maintainer belong in plain `//` comments on the relevant code, not in the published doc. (Items that are `pub(crate)`/`pub(super)`/private aren't published, so their docs can be as internal as needed.)
+3. **Make it useful to the next maintainer.** A comment should earn its place by explaining something the code can't: a non-obvious constraint (why a value is computed before an `await` to keep a future `Send`), a wire-shape provenance, a security rationale (why a field is redacted), or where the canonical place to make a related change is. Don't restate what the code already says.
+
 ## Release Process
 
 Each crate has its own `[package.metadata.release]` for `cargo-release`. Common config:

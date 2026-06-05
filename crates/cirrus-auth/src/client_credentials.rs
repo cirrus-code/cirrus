@@ -33,7 +33,7 @@
 
 use crate::AuthSession;
 use crate::error::{AuthError, AuthResult};
-use crate::token_endpoint::{check_instance_url, exchange};
+use crate::token_endpoint::{check_instance_url, exchange, token_is_fresh};
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
@@ -127,9 +127,10 @@ impl ClientCredentialsAuth {
         let token = exchange(&self.http, &self.login_url, &body).await?;
         check_instance_url(&self.instance_url, &token)?;
 
+        let expires_at = token.cache_expiry(self.token_ttl);
         Ok(CachedToken {
             access_token: token.access_token,
-            expires_at: Instant::now() + self.token_ttl,
+            expires_at,
         })
     }
 }
@@ -141,7 +142,7 @@ impl AuthSession for ClientCredentialsAuth {
         {
             let guard = self.cached.read().await;
             if let Some(cached) = guard.as_ref()
-                && cached.expires_at > Instant::now()
+                && token_is_fresh(cached.expires_at)
             {
                 return Ok(Cow::Owned(cached.access_token.clone()));
             }
@@ -150,7 +151,7 @@ impl AuthSession for ClientCredentialsAuth {
         // Slow path — write lock, double-check, mint.
         let mut guard = self.cached.write().await;
         if let Some(cached) = guard.as_ref()
-            && cached.expires_at > Instant::now()
+            && token_is_fresh(cached.expires_at)
         {
             return Ok(Cow::Owned(cached.access_token.clone()));
         }
@@ -423,6 +424,70 @@ mod tests {
         let _ = auth.access_token().await.unwrap();
         let _ = auth.access_token().await.unwrap();
         assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn token_within_refresh_margin_is_treated_as_expired() {
+        // A configured TTL shorter than the 60s refresh margin means every
+        // cached token is already inside its refresh window, so each call
+        // re-mints. 30s < 60s, so this is deterministic without sleeping.
+        let server = MockServer::start().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+
+        Mock::given(method("POST"))
+            .and(path("/services/oauth2/token"))
+            .respond_with(CountingResponder {
+                hits: hits.clone(),
+                response: ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "access_token": "tok",
+                    "instance_url": "https://my-org.my.salesforce.com"
+                })),
+            })
+            .mount(&server)
+            .await;
+
+        let auth = builder_with_required_fields()
+            .login_url(server.uri())
+            .token_ttl(Duration::from_secs(30))
+            .build()
+            .unwrap();
+
+        let _ = auth.access_token().await.unwrap();
+        let _ = auth.access_token().await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn server_expires_in_overrides_configured_ttl() {
+        // The response advertises a 1-second lifetime while the configured
+        // TTL is the 30-minute default. The short server-advertised lifetime
+        // must win, putting the token immediately inside the refresh margin
+        // so it re-mints on every call.
+        let server = MockServer::start().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+
+        Mock::given(method("POST"))
+            .and(path("/services/oauth2/token"))
+            .respond_with(CountingResponder {
+                hits: hits.clone(),
+                response: ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "access_token": "tok",
+                    "instance_url": "https://my-org.my.salesforce.com",
+                    "expires_in": 1
+                })),
+            })
+            .mount(&server)
+            .await;
+
+        let auth = builder_with_required_fields()
+            .login_url(server.uri())
+            // Default 30-minute TTL — would otherwise cache for the whole run.
+            .build()
+            .unwrap();
+
+        let _ = auth.access_token().await.unwrap();
+        let _ = auth.access_token().await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

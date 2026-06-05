@@ -136,6 +136,19 @@ impl std::fmt::Debug for Cirrus {
     }
 }
 
+/// Outcome of the shared 401 auth-refresh decision run at the tail of
+/// every send path.
+enum AuthRetry {
+    /// The cached token was invalidated and a genuinely new one obtained;
+    /// the caller should loop and retry the request.
+    Retry,
+    /// Not a refreshable 401 — already retried once, the result wasn't a
+    /// 401, or the auth session couldn't produce a different token (static
+    /// auth, scope/permission issue). The caller should return the result
+    /// as-is.
+    Done,
+}
+
 impl Cirrus {
     /// Creates a new builder for constructing a [`Cirrus`] client.
     ///
@@ -390,6 +403,48 @@ impl Cirrus {
         self.client.execute(request).await.map_err(Into::into)
     }
 
+    /// Shared 401 auth-refresh tail used by every send path.
+    ///
+    /// On a 401 that hasn't already been retried this call, invalidate the
+    /// cached token (compare-and-swap against `token`) and fetch a fresh
+    /// one. Returns [`AuthRetry::Retry`] when a genuinely different token
+    /// was obtained — the caller should set its own `auth_retried` latch
+    /// and loop — or [`AuthRetry::Done`] otherwise. `auth_retried` short-
+    /// circuits the whole check so the refresh happens at most once.
+    ///
+    /// All five send paths route their 401 handling through this single
+    /// method, so the refresh behavior lives in one place rather than being
+    /// duplicated across them. This is the place to change it.
+    ///
+    /// `is_retryable_401` is computed by the caller from the response
+    /// *before* this future is awaited — deliberately not a borrow of the
+    /// `CirrusResult<T>`, so this future stays `Send` without forcing a
+    /// `T: Sync` bound on the streaming send paths.
+    async fn auth_retry_decision(
+        &self,
+        is_retryable_401: bool,
+        token: &str,
+        auth_retried: bool,
+    ) -> CirrusResult<AuthRetry> {
+        if auth_retried || !is_retryable_401 {
+            return Ok(AuthRetry::Done);
+        }
+        tracing::warn!(
+            target: "cirrus::auth",
+            "received 401; invalidating cached token and retrying once",
+        );
+        self.auth.invalidate(token).await;
+        let fresh = self.auth.access_token().await?;
+        if *fresh == *token {
+            tracing::warn!(
+                target: "cirrus::auth",
+                "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
+            );
+            return Ok(AuthRetry::Done);
+        }
+        Ok(AuthRetry::Retry)
+    }
+
     async fn send<R, Q, B>(
         &self,
         method: reqwest::Method,
@@ -462,24 +517,17 @@ impl Cirrus {
             // 401 → invalidate the cached token and try once more with
             // a fresh one. If the auth session can't refresh (returns
             // the same token), surface the 401 verbatim.
-            if !auth_retried && let Err(CirrusError::Api { status: 401, .. }) = &result {
-                tracing::warn!(
-                    target: "cirrus::auth",
-                    "received 401; invalidating cached token and retrying once",
-                );
-                self.auth.invalidate(&token).await;
-                let fresh = self.auth.access_token().await?;
-                if *fresh == *token {
-                    tracing::warn!(
-                        target: "cirrus::auth",
-                        "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
-                    );
-                    return result;
+            let is_retryable_401 = matches!(&result, Err(CirrusError::Api { status: 401, .. }));
+            match self
+                .auth_retry_decision(is_retryable_401, &token, auth_retried)
+                .await?
+            {
+                AuthRetry::Retry => {
+                    auth_retried = true;
+                    continue;
                 }
-                auth_retried = true;
-                continue;
+                AuthRetry::Done => return result,
             }
-            return result;
         }
     }
 
@@ -549,24 +597,17 @@ impl Cirrus {
                 }
             };
 
-            if !auth_retried && let Err(CirrusError::Api { status: 401, .. }) = &result {
-                tracing::warn!(
-                    target: "cirrus::auth",
-                    "received 401; invalidating cached token and retrying once",
-                );
-                self.auth.invalidate(&token).await;
-                let fresh = self.auth.access_token().await?;
-                if *fresh == *token {
-                    tracing::warn!(
-                        target: "cirrus::auth",
-                        "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
-                    );
-                    return result;
+            let is_retryable_401 = matches!(&result, Err(CirrusError::Api { status: 401, .. }));
+            match self
+                .auth_retry_decision(is_retryable_401, &token, auth_retried)
+                .await?
+            {
+                AuthRetry::Retry => {
+                    auth_retried = true;
+                    continue;
                 }
-                auth_retried = true;
-                continue;
+                AuthRetry::Done => return result,
             }
-            return result;
         }
     }
 
@@ -672,24 +713,17 @@ impl Cirrus {
                 }
             };
 
-            if !auth_retried && let Err(CirrusError::Api { status: 401, .. }) = &result {
-                tracing::warn!(
-                    target: "cirrus::auth",
-                    "received 401; invalidating cached token and retrying once",
-                );
-                self.auth.invalidate(&token).await;
-                let fresh = self.auth.access_token().await?;
-                if *fresh == *token {
-                    tracing::warn!(
-                        target: "cirrus::auth",
-                        "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
-                    );
-                    return result;
+            let is_retryable_401 = matches!(&result, Err(CirrusError::Api { status: 401, .. }));
+            match self
+                .auth_retry_decision(is_retryable_401, &token, auth_retried)
+                .await?
+            {
+                AuthRetry::Retry => {
+                    auth_retried = true;
+                    continue;
                 }
-                auth_retried = true;
-                continue;
+                AuthRetry::Done => return result,
             }
-            return result;
         }
     }
 
@@ -762,24 +796,17 @@ impl Cirrus {
                 }
             };
 
-            if !auth_retried && let Err(CirrusError::Api { status: 401, .. }) = &result {
-                tracing::warn!(
-                    target: "cirrus::auth",
-                    "received 401; invalidating cached token and retrying once",
-                );
-                self.auth.invalidate(&token).await;
-                let fresh = self.auth.access_token().await?;
-                if *fresh == *token {
-                    tracing::warn!(
-                        target: "cirrus::auth",
-                        "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
-                    );
-                    return result;
+            let is_retryable_401 = matches!(&result, Err(CirrusError::Api { status: 401, .. }));
+            match self
+                .auth_retry_decision(is_retryable_401, &token, auth_retried)
+                .await?
+            {
+                AuthRetry::Retry => {
+                    auth_retried = true;
+                    continue;
                 }
-                auth_retried = true;
-                continue;
+                AuthRetry::Done => return result,
             }
-            return result;
         }
     }
 
@@ -860,24 +887,17 @@ impl Cirrus {
                 }
             };
 
-            if !auth_retried && let Err(CirrusError::Api { status: 401, .. }) = &result {
-                tracing::warn!(
-                    target: "cirrus::auth",
-                    "received 401; invalidating cached token and retrying once",
-                );
-                self.auth.invalidate(&token).await;
-                let fresh = self.auth.access_token().await?;
-                if *fresh == *token {
-                    tracing::warn!(
-                        target: "cirrus::auth",
-                        "auth session returned same token after invalidate; surfacing 401 (likely static auth or scope/permission issue)",
-                    );
-                    return result;
+            let is_retryable_401 = matches!(&result, Err(CirrusError::Api { status: 401, .. }));
+            match self
+                .auth_retry_decision(is_retryable_401, &token, auth_retried)
+                .await?
+            {
+                AuthRetry::Retry => {
+                    auth_retried = true;
+                    continue;
                 }
-                auth_retried = true;
-                continue;
+                AuthRetry::Done => return result,
             }
-            return result;
         }
     }
 }

@@ -247,8 +247,14 @@ impl<'a> ToolingSObjectHandler<'a> {
 
     /// Typed variant of [`describe`](Self::describe).
     pub async fn describe_as<R: DeserializeOwned>(&self) -> CirrusResult<R> {
-        let path = format!("tooling/sobjects/{}/describe", self.name);
-        self.client.get(&path).await
+        // Percent-encode each segment so a reserved character in the object
+        // name can't alter the path — mirrors the regular SObjectHandler.
+        let url = self
+            .client
+            .versioned_segments(&["tooling", "sobjects", self.name, "describe"])?;
+        self.client
+            .send_at(reqwest::Method::GET, &url, None::<&()>, None::<&()>)
+            .await
     }
 
     /// Retrieves a Tooling-API record by ID, returning every field.
@@ -261,8 +267,12 @@ impl<'a> ToolingSObjectHandler<'a> {
 
     /// Typed variant of [`retrieve`](Self::retrieve).
     pub async fn retrieve_as<R: DeserializeOwned>(&self, id: &str) -> CirrusResult<R> {
-        let path = format!("tooling/sobjects/{}/{}", self.name, id);
-        self.client.get(&path).await
+        let url = self
+            .client
+            .versioned_segments(&["tooling", "sobjects", self.name, id])?;
+        self.client
+            .send_at(reqwest::Method::GET, &url, None::<&()>, None::<&()>)
+            .await
     }
 
     /// Retrieves selected fields of a Tooling-API record by ID.
@@ -280,10 +290,14 @@ impl<'a> ToolingSObjectHandler<'a> {
         id: &str,
         fields: &[&str],
     ) -> CirrusResult<R> {
-        let path = format!("tooling/sobjects/{}/{}", self.name, id);
+        let url = self
+            .client
+            .versioned_segments(&["tooling", "sobjects", self.name, id])?;
         let joined = fields.join(",");
         let query = [("fields", joined.as_str())];
-        self.client.get_with_query(&path, &query).await
+        self.client
+            .send_at(reqwest::Method::GET, &url, Some(&query), None::<&()>)
+            .await
     }
 
     /// Creates a new Tooling-API record.
@@ -295,8 +309,12 @@ impl<'a> ToolingSObjectHandler<'a> {
     where
         B: Serialize + ?Sized,
     {
-        let path = format!("tooling/sobjects/{}", self.name);
-        self.client.post(&path, body).await
+        let url = self
+            .client
+            .versioned_segments(&["tooling", "sobjects", self.name])?;
+        self.client
+            .send_at(reqwest::Method::POST, &url, None::<&()>, Some(body))
+            .await
     }
 
     /// Updates a Tooling-API record by ID.
@@ -308,8 +326,12 @@ impl<'a> ToolingSObjectHandler<'a> {
     where
         B: Serialize + ?Sized,
     {
-        let path = format!("tooling/sobjects/{}/{}", self.name, id);
-        self.client.patch(&path, body).await
+        let url = self
+            .client
+            .versioned_segments(&["tooling", "sobjects", self.name, id])?;
+        self.client
+            .send_at(reqwest::Method::PATCH, &url, None::<&()>, Some(body))
+            .await
     }
 
     /// Deletes a Tooling-API record by ID.
@@ -318,8 +340,12 @@ impl<'a> ToolingSObjectHandler<'a> {
     /// `DELETE /services/data/{api_version}/tooling/sobjects/{name}/{id}`.
     /// Salesforce returns 204 No Content on success.
     pub async fn delete(&self, id: &str) -> CirrusResult<()> {
-        let path = format!("tooling/sobjects/{}/{}", self.name, id);
-        self.client.delete(&path).await
+        let url = self
+            .client
+            .versioned_segments(&["tooling", "sobjects", self.name, id])?;
+        self.client
+            .send_at(reqwest::Method::DELETE, &url, None::<&()>, None::<&()>)
+            .await
     }
 }
 
@@ -330,7 +356,7 @@ mod tests {
     use crate::auth::StaticTokenAuth;
     use serde_json::json;
     use std::sync::Arc;
-    use wiremock::matchers::{body_json, header, method, path, query_param};
+    use wiremock::matchers::{body_json, header, method, path, path_regex, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn fixture(uri: String) -> Cirrus {
@@ -523,6 +549,31 @@ mod tests {
             .delete("01p000000000001")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn sobject_retrieve_percent_encodes_record_id() {
+        // A record ID carrying characters reserved in a URL path segment
+        // ('/', '=', space) must be percent-encoded so it can't alter the
+        // path structure — same contract as the regular SObjectHandler.
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path_regex(
+                r"^/services/data/v66\.0/tooling/sobjects/ApexClass/.+$",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Id": "ok"})))
+            .mount(&server)
+            .await;
+
+        let sf = fixture(server.uri());
+        let v = sf
+            .tooling()
+            .sobject("ApexClass")
+            .retrieve("a/b=c d")
+            .await
+            .unwrap();
+        assert_eq!(v["Id"], "ok");
     }
 
     #[tokio::test]

@@ -31,7 +31,9 @@
 
 use crate::Cirrus;
 use crate::error::CirrusResult;
-use crate::response::{BulkIngestJob, BulkOperation, BulkQueryJob, BulkQueryResults};
+use crate::response::{
+    BulkIngestJob, BulkJobStateChange, BulkOperation, BulkQueryJob, BulkQueryResults,
+};
 use serde::Serialize;
 
 const CSV_CONTENT_TYPE: &str = "text/csv";
@@ -145,20 +147,22 @@ impl BulkIngestHandler<'_> {
     }
 
     /// Marks a job as ready for processing by transitioning its state to
-    /// `UploadComplete`. Returns the updated job metadata.
+    /// `UploadComplete`. Returns the partial job view Salesforce sends
+    /// for state changes — poll [`get`](Self::get) for full metadata.
     ///
     /// Calls `PATCH /services/data/{api_version}/jobs/ingest/{job_id}`
     /// with `{"state": "UploadComplete"}`.
-    pub async fn close(&self, job_id: &str) -> CirrusResult<BulkIngestJob> {
+    pub async fn close(&self, job_id: &str) -> CirrusResult<BulkJobStateChange> {
         self.patch_state(job_id, "UploadComplete").await
     }
 
     /// Aborts a job. Records already processed remain committed —
-    /// Salesforce does *not* roll back. Returns the updated metadata.
+    /// Salesforce does *not* roll back. Returns the partial job view
+    /// Salesforce sends for state changes.
     ///
     /// Calls `PATCH /services/data/{api_version}/jobs/ingest/{job_id}`
     /// with `{"state": "Aborted"}`.
-    pub async fn abort(&self, job_id: &str) -> CirrusResult<BulkIngestJob> {
+    pub async fn abort(&self, job_id: &str) -> CirrusResult<BulkJobStateChange> {
         self.patch_state(job_id, "Aborted").await
     }
 
@@ -217,7 +221,11 @@ impl BulkIngestHandler<'_> {
         self.fetch_csv_results(job_id, "unprocessedrecords").await
     }
 
-    async fn patch_state(&self, job_id: &str, new_state: &str) -> CirrusResult<BulkIngestJob> {
+    async fn patch_state(
+        &self,
+        job_id: &str,
+        new_state: &str,
+    ) -> CirrusResult<BulkJobStateChange> {
         let path = self
             .client
             .versioned_segments(&["jobs", "ingest", job_id])?;
@@ -275,11 +283,13 @@ impl BulkQueryHandler<'_> {
             .await
     }
 
-    /// Aborts a running query job.
+    /// Aborts a running query job. Returns the partial job view
+    /// Salesforce sends for state changes — see [`get`](Self::get) for
+    /// full metadata.
     ///
     /// Calls `PATCH /services/data/{api_version}/jobs/query/{job_id}`
     /// with `{"state": "Aborted"}`.
-    pub async fn abort(&self, job_id: &str) -> CirrusResult<BulkQueryJob> {
+    pub async fn abort(&self, job_id: &str) -> CirrusResult<BulkJobStateChange> {
         let path = self.client.versioned_segments(&["jobs", "query", job_id])?;
         let body = StatePatch { state: "Aborted" };
         self.client
@@ -423,6 +433,25 @@ mod tests {
         Cirrus::builder().auth(auth).build().unwrap()
     }
 
+    fn state_change_response(id: &str, operation: &str, state: &str) -> serde_json::Value {
+        // Mirrors the documented state-transition PATCH response — see
+        // api_asynch query_abort_job (the ingest close_job/abort_job
+        // pages reuse the generic field table, but the wire matches
+        // this shape). No `jobType`, `lineEnding`, or `columnDelimiter`.
+        json!({
+            "id": id,
+            "operation": operation,
+            "object": "Account",
+            "createdById": "005xx",
+            "createdDate": "2024-01-01T00:00:00.000+0000",
+            "systemModstamp": "2024-01-01T00:00:00.000+0000",
+            "state": state,
+            "concurrencyMode": "Parallel",
+            "contentType": "CSV",
+            "apiVersion": 60.0
+        })
+    }
+
     fn ingest_job_response(id: &str, state: &str) -> serde_json::Value {
         json!({
             "id": id,
@@ -536,14 +565,17 @@ mod tests {
             .and(body_json(json!({"state": "UploadComplete"})))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_body_json(ingest_job_response("750xx", "UploadComplete")),
+                    .set_body_json(state_change_response("750xx", "update", "UploadComplete")),
             )
             .mount(&server)
             .await;
 
         let sf = fixture(server.uri());
         let job = sf.bulk().ingest().close("750xx").await.unwrap();
+        assert_eq!(job.id, "750xx");
+        assert_eq!(job.operation, BulkOperation::Update);
         assert_eq!(job.state, BulkJobState::UploadComplete);
+        assert!(job.external_id_field_name.is_none());
     }
 
     #[tokio::test]
@@ -554,7 +586,8 @@ mod tests {
             .and(path("/services/data/v66.0/jobs/ingest/750xx"))
             .and(body_json(json!({"state": "Aborted"})))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(ingest_job_response("750xx", "Aborted")),
+                ResponseTemplate::new(200)
+                    .set_body_json(state_change_response("750xx", "insert", "Aborted")),
             )
             .mount(&server)
             .await;
@@ -814,13 +847,15 @@ mod tests {
             .and(path("/services/data/v66.0/jobs/query/750xx"))
             .and(body_json(json!({"state": "Aborted"})))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(query_job_response("750xx", "Aborted")),
+                ResponseTemplate::new(200)
+                    .set_body_json(state_change_response("750xx", "query", "Aborted")),
             )
             .mount(&server)
             .await;
 
         let sf = fixture(server.uri());
         let job = sf.bulk().query().abort("750xx").await.unwrap();
+        assert_eq!(job.operation, BulkOperation::Query);
         assert_eq!(job.state, BulkJobState::Aborted);
     }
 }

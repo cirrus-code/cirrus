@@ -159,13 +159,9 @@ impl<'a> SObjectHandler<'a> {
         &self,
         since: SystemTime,
     ) -> CirrusResult<Option<R>> {
-        // versioned_segments produces a fully-resolved instance URL.
-        // send_with_headers takes a path that goes through
-        // resolve_url; pass the absolute URL through the leading-`/`
-        // / fully-qualified branches by stripping the instance prefix
-        // — no, simpler: use resolve_url's three-mode dispatch on the
-        // pre-built URL, which it'll route through passthrough mode
-        // when the URL starts with http(s)://.
+        // versioned_segments produces an absolute URL, which
+        // send_with_headers' three-mode path resolution passes
+        // through verbatim.
         let url = self
             .client
             .versioned_segments(&["sobjects", self.name, "describe"])?;
@@ -361,14 +357,14 @@ impl<'a> SObjectHandler<'a> {
     where
         B: Serialize + ?Sized,
     {
-        let path = format!("sobjects/{}", self.name);
+        let url = self.client.versioned_segments(&["sobjects", self.name])?;
         let json_bytes =
             serde_json::to_vec(spec.metadata).map_err(crate::error::CirrusError::Serialization)?;
         let content_type = spec.content_type.unwrap_or("application/octet-stream");
         self.client
             .send_multipart(
                 reqwest::Method::POST,
-                &path,
+                &url,
                 spec.json_part_name,
                 json_bytes,
                 spec.blob_field_name,
@@ -407,14 +403,16 @@ impl<'a> SObjectHandler<'a> {
     where
         B: Serialize + ?Sized,
     {
-        let path = format!("sobjects/{}/{}", self.name, id);
+        let url = self
+            .client
+            .versioned_segments(&["sobjects", self.name, id])?;
         let json_bytes =
             serde_json::to_vec(spec.metadata).map_err(crate::error::CirrusError::Serialization)?;
         let content_type = spec.content_type.unwrap_or("application/octet-stream");
         self.client
             .send_multipart(
                 reqwest::Method::PATCH,
-                &path,
+                &url,
                 spec.json_part_name,
                 json_bytes,
                 spec.blob_field_name,

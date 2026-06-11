@@ -156,7 +156,10 @@ impl EventMonitoringHandler<'_> {
         // Normalize bare paths the way query_more does, so callers can
         // pass the LogFile field straight through whether it has a
         // leading slash or not.
-        let path = if log_file_url.starts_with('/') || log_file_url.starts_with("http") {
+        let path = if log_file_url.starts_with('/')
+            || log_file_url.starts_with("http://")
+            || log_file_url.starts_with("https://")
+        {
             log_file_url.to_string()
         } else {
             format!("/{log_file_url}")

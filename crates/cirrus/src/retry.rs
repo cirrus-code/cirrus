@@ -132,11 +132,14 @@ pub(crate) fn should_retry_status(
 
 /// Decision point: should we retry this network-level failure?
 ///
-/// Network errors (DNS resolution failure, connection refused,
-/// connection reset, timeout) are ambiguous — the server may or may
-/// not have processed the request before the connection dropped. We
-/// only retry idempotent methods, where a duplicated effect is
-/// harmless.
+/// Network errors that occur mid-request (connection reset, read
+/// timeout) are ambiguous — the server may or may not have processed
+/// the request before the connection dropped — so those retry only on
+/// idempotent methods, where a duplicated effect is harmless.
+/// Connect-phase errors (DNS failure, TCP RST, TLS handshake failure,
+/// connect timeout) mean the request never reached the server, so
+/// retrying is safe for any method. Same policy as the
+/// `cirrus-metadata` sibling.
 pub(crate) fn should_retry_network(
     policy: &RetryPolicy,
     method: &reqwest::Method,
@@ -146,10 +149,13 @@ pub(crate) fn should_retry_network(
     if attempt >= policy.max_retries {
         return false;
     }
-    if !is_idempotent(method) {
+    let CirrusError::Http(http) = error else {
         return false;
+    };
+    if http.is_connect() {
+        return true;
     }
-    matches!(error, CirrusError::Http(_))
+    is_idempotent(method)
 }
 
 fn is_idempotent(method: &reqwest::Method) -> bool {
@@ -282,6 +288,25 @@ mod tests {
             assert!(!should_retry_status(&p, &reqwest::Method::POST, status, 0));
             assert!(!should_retry_status(&p, &reqwest::Method::PATCH, status, 0));
         }
+    }
+
+    #[tokio::test]
+    async fn retries_connect_errors_for_any_method() {
+        // Port 1 on loopback is unbound, so the connect is refused
+        // before any request bytes are written — a real connect-phase
+        // reqwest::Error without touching the network.
+        let p = RetryPolicy::default();
+        let err: CirrusError = reqwest::Client::new()
+            .post("http://127.0.0.1:1/")
+            .send()
+            .await
+            .unwrap_err()
+            .into();
+        assert!(should_retry_network(&p, &reqwest::Method::POST, &err, 0));
+        assert!(should_retry_network(&p, &reqwest::Method::PATCH, &err, 0));
+        assert!(should_retry_network(&p, &reqwest::Method::GET, &err, 0));
+        // The cap still applies.
+        assert!(!should_retry_network(&p, &reqwest::Method::POST, &err, 3));
     }
 
     #[test]

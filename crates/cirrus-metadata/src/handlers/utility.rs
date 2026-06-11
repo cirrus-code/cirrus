@@ -138,6 +138,11 @@ impl MetadataClient {
         queries: Vec<ListMetadataQuery>,
         as_of_version: &str,
     ) -> MetadataResult<Vec<FileProperties>> {
+        if queries.is_empty() {
+            return Err(MetadataError::InvalidArgument(
+                "listMetadata requires at least one query; got 0".to_string(),
+            ));
+        }
         if queries.len() > MAX_LIST_METADATA_QUERIES_PER_CALL {
             return Err(MetadataError::InvalidArgument(format!(
                 "listMetadata accepts at most {MAX_LIST_METADATA_QUERIES_PER_CALL} queries per \

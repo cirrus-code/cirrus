@@ -416,6 +416,12 @@ impl MetadataClient {
     /// to a 30 s cap, no timeout. For CI-friendly timeouts, use
     /// [`Self::wait_for_deploy_with`] with
     /// [`WaitConfig::with_timeout`].
+    ///
+    /// [`DeployResult::details`] is populated best-effort: it comes
+    /// from one final `include_details: true` fetch after the deploy
+    /// reaches a terminal state, and if that follow-up call fails the
+    /// terminal result is returned with `details: None` rather than
+    /// discarding a completed deploy's outcome behind an error.
     pub async fn wait_for_deploy(&self, deploy_id: &str) -> MetadataResult<DeployResult> {
         self.wait_for_deploy_with(deploy_id, WaitConfig::default())
             .await
@@ -436,7 +442,23 @@ impl MetadataClient {
             // the deploy reaches a terminal state.
             let result = self.check_deploy_status(deploy_id, false).await?;
             if result.done {
-                return self.check_deploy_status(deploy_id, true).await;
+                // The terminal result is already in hand; the details
+                // fetch only enriches it. If the follow-up fails (after
+                // its own retries), return what we have — an error here
+                // would discard a completed deploy's outcome.
+                return match self.check_deploy_status(deploy_id, true).await {
+                    Ok(with_details) => Ok(with_details),
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "cirrus_metadata::poll",
+                            deploy_id,
+                            error = %e,
+                            "deploy reached a terminal state but the details fetch failed; \
+                             returning the result without details",
+                        );
+                        Ok(result)
+                    }
+                };
             }
             if let Some(timeout) = config.total_timeout
                 && start.elapsed() >= timeout

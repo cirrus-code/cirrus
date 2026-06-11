@@ -463,6 +463,67 @@ async fn wait_for_deploy_polls_until_done() {
 }
 
 #[tokio::test]
+async fn wait_for_deploy_returns_terminal_result_when_details_fetch_fails() {
+    let server = MockServer::start().await;
+
+    // First poll: done. Second call (the include_details=true follow-up):
+    // server error. The helper must surface the terminal result it
+    // already holds instead of discarding it behind the follow-up error.
+    let counter = Arc::new(AtomicUsize::new(0));
+
+    Mock::given(method("POST"))
+        .and(body_string_contains("<met:checkDeployStatus>"))
+        .respond_with({
+            let counter = counter.clone();
+            move |_: &wiremock::Request| {
+                let n = counter.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/xml; charset=UTF-8")
+                        .set_body_string(
+                            r#"<?xml version="1.0"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+  <soapenv:Body>
+    <checkDeployStatusResponse xmlns="http://soap.sforce.com/2006/04/metadata">
+      <result>
+        <id>0Af00000nodet</id>
+        <done>true</done>
+        <success>true</success>
+        <status>Succeeded</status>
+      </result>
+    </checkDeployStatusResponse>
+  </soapenv:Body>
+</soapenv:Envelope>"#,
+                        )
+                } else {
+                    ResponseTemplate::new(500)
+                }
+            }
+        })
+        .mount(&server)
+        .await;
+
+    let md = client_against(&server);
+    let result = md
+        .wait_for_deploy_with(
+            "0Af00000nodet",
+            WaitConfig {
+                initial_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(5),
+                total_timeout: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.status, Some(DeployStatus::Succeeded));
+    assert!(result.details.is_none());
+    // One terminal poll plus the failed details fetch (500 on POST is
+    // not retried).
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn wait_for_deploy_times_out_when_never_done() {
     let server = MockServer::start().await;
 

@@ -57,7 +57,7 @@ pub struct SearchResult<R> {
     #[serde(rename = "searchRecords", default = "Vec::new")]
     pub search_records: Vec<R>,
     /// Field-label metadata, present only when the request asked for it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub metadata: Option<serde_json::Value>,
 }
 
@@ -293,8 +293,10 @@ pub struct BulkIngestJob {
     pub content_type: String,
     #[serde(rename = "contentUrl", default)]
     pub content_url: Option<String>,
+    /// The wire sends a JSON number (e.g. `60.0`), so this is a float
+    /// rather than the `String` used by [`ApiVersion::version`].
     #[serde(rename = "apiVersion")]
-    pub api_version: f32,
+    pub api_version: f64,
     #[serde(rename = "jobType")]
     pub job_type: String,
     #[serde(rename = "concurrencyMode")]
@@ -356,8 +358,10 @@ pub struct BulkQueryJob {
     pub column_delimiter: BulkColumnDelimiter,
     #[serde(rename = "contentType")]
     pub content_type: String,
+    /// The wire sends a JSON number (e.g. `60.0`), so this is a float
+    /// rather than the `String` used by [`ApiVersion::version`].
     #[serde(rename = "apiVersion")]
-    pub api_version: f32,
+    pub api_version: f64,
     /// `"V2Query"` once the job reaches the GET endpoint. **Not** echoed
     /// in CREATE responses; expect `None` until GET.
     #[serde(rename = "jobType", default)]
@@ -756,10 +760,16 @@ pub(crate) fn parse_response_bytes<R: DeserializeOwned>(
 ) -> CirrusResult<R> {
     if (200..300).contains(&status) {
         if bytes.is_empty() {
-            // Some endpoints return 204 No Content. Try to deserialize an empty
-            // JSON null — works for `()` and for `Option<T>`. Anything else
-            // produces a serialization error that surfaces the mismatch.
-            return serde_json::from_slice(b"null").map_err(CirrusError::Serialization);
+            // Some endpoints return 204 No Content. Deserialize JSON null —
+            // works for `()` and for `Option<T>`. For any other `R`, name
+            // the real problem (empty body) instead of surfacing serde's
+            // opaque "invalid type: null" message.
+            return serde_json::from_slice(b"null").map_err(|_| {
+                CirrusError::InvalidResponse(format!(
+                    "endpoint returned {status} with an empty body; deserialize into `()` or \
+                     `Option<T>` instead of a non-nullable type"
+                ))
+            });
         }
         return serde_json::from_slice(bytes).map_err(CirrusError::Serialization);
     }
@@ -877,6 +887,14 @@ mod tests {
     fn empty_2xx_body_is_treated_as_null() {
         let parsed: Option<Value> = parse_response_bytes(204, b"").unwrap();
         assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn empty_2xx_body_into_non_nullable_type_names_the_problem() {
+        let err = parse_response_bytes::<Limit>(204, b"").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("204"), "got: {msg}");
+        assert!(msg.contains("empty body"), "got: {msg}");
     }
 
     #[test]

@@ -174,6 +174,13 @@ impl MetadataClient {
     /// `client.auth().access_token().await?` and splice it into your
     /// envelope.
     ///
+    /// **Security note:** because the token travels in the request
+    /// *body*, redacting the `Authorization` header is not enough —
+    /// any middleware or proxy that logs request bodies will capture
+    /// the session token in plaintext. This applies to every request
+    /// this client sends, including the typed [`call`](Self::call)
+    /// path.
+    ///
     /// Use this only when you need to bypass the typed
     /// [`SoapOperation`] path entirely (e.g. to record raw traffic).
     pub fn request_builder(&self) -> reqwest::RequestBuilder {
@@ -192,6 +199,11 @@ impl MetadataClient {
     /// `O::Response`. Returns [`MetadataError::Soap`] for server-side
     /// faults and [`MetadataError::Http`] / [`MetadataError::Http4xx5xx`]
     /// for transport-level failures.
+    ///
+    /// The session token travels inside the SOAP envelope (the request
+    /// *body*) — see the security note on
+    /// [`request_builder`](Self::request_builder) before wiring
+    /// body-logging middleware around this client.
     pub async fn call<O: SoapOperation>(&self, op: &O) -> MetadataResult<O::Response> {
         transport::soap_call(self, op).await
     }

@@ -412,9 +412,9 @@ impl Cirrus {
     /// and loop — or [`AuthRetry::Done`] otherwise. `auth_retried` short-
     /// circuits the whole check so the refresh happens at most once.
     ///
-    /// All five send paths route their 401 handling through this single
-    /// method, so the refresh behavior lives in one place rather than being
-    /// duplicated across them. This is the place to change it.
+    /// Every send path reaches this through the shared [`Self::dispatch`]
+    /// loop, so the refresh behavior lives in one place. This is the place
+    /// to change it.
     ///
     /// `is_retryable_401` is computed by the caller from the response
     /// *before* this future is awaited — deliberately not a borrow of the
@@ -445,37 +445,46 @@ impl Cirrus {
         Ok(AuthRetry::Retry)
     }
 
-    async fn send<R, Q, B>(
+    /// Shared request loop behind every send path.
+    ///
+    /// Two nested retry layers, each with its own budget:
+    ///
+    /// - **Inner loop** — the [`RetryPolicy`]-driven transient retry
+    ///   (429/5xx and network errors), counted by `attempt`.
+    /// - **Outer loop** — the 401 auth-refresh retry, latched to at most
+    ///   two passes via [`Self::auth_retry_decision`].
+    ///
+    /// `attempt` resets to zero when the outer loop re-enters with a
+    /// fresh token: transient flakiness and credential staleness are
+    /// independent failure classes, so retries burned on throttling
+    /// before a 401 must not starve the post-refresh request. The reset
+    /// also restarts the backoff schedule from `base_delay`. Total work
+    /// stays bounded at `2 * (max_retries + 1)` requests because the
+    /// outer loop is latched.
+    ///
+    /// `make_request` builds a fresh request from the current bearer
+    /// token, once per attempt ([`reqwest::RequestBuilder`] is consumed
+    /// by `send`); an `Err` from it aborts the whole call without
+    /// retrying. `parse` maps the terminal response into the caller's
+    /// result shape. `Sforce-Limit-Info` capture happens here, on every
+    /// response, so no send path can forget it.
+    async fn dispatch<T, MakeReq, Parse>(
         &self,
-        method: reqwest::Method,
-        url: &str,
-        query: Option<&Q>,
-        body: Option<&B>,
-    ) -> CirrusResult<R>
+        method: &reqwest::Method,
+        make_request: MakeReq,
+        parse: Parse,
+    ) -> CirrusResult<T>
     where
-        R: DeserializeOwned,
-        Q: Serialize + ?Sized,
-        B: Serialize + ?Sized,
+        MakeReq: Fn(&str) -> CirrusResult<reqwest::RequestBuilder>,
+        Parse: Fn(u16, reqwest::header::HeaderMap, bytes::Bytes) -> CirrusResult<T>,
     {
-        // Outer loop: auth-retry on 401 (max once). Inner loop: the
-        // RetryPolicy-driven transient-failure retry from the previous
-        // round of work.
         let mut auth_retried = false;
         let mut attempt: u32 = 0;
         loop {
             let token = self.auth.access_token().await?;
 
-            let result: CirrusResult<R> = loop {
-                let mut request = self
-                    .client
-                    .request(method.clone(), url)
-                    .bearer_auth(&*token);
-                if let Some(q) = query {
-                    request = request.query(q);
-                }
-                if let Some(b) = body {
-                    request = request.json(b);
-                }
+            let result: CirrusResult<T> = loop {
+                let request = make_request(&token)?;
 
                 match request.send().await {
                     Ok(response) => {
@@ -483,8 +492,7 @@ impl Cirrus {
                         let headers = response.headers().clone();
                         self.update_limit_info(&headers);
 
-                        if retry::should_retry_status(&self.retry_policy, &method, status, attempt)
-                        {
+                        if retry::should_retry_status(&self.retry_policy, method, status, attempt) {
                             // Drain the body so the connection returns
                             // to the pool clean.
                             let _ = response.bytes().await;
@@ -497,13 +505,13 @@ impl Cirrus {
                         }
 
                         match response.bytes().await {
-                            Ok(bytes) => break response::parse_response_bytes(status, &bytes),
+                            Ok(bytes) => break parse(status, headers, bytes),
                             Err(e) => break Err(e.into()),
                         }
                     }
                     Err(e) => {
                         let err: CirrusError = e.into();
-                        if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
+                        if retry::should_retry_network(&self.retry_policy, method, &err, attempt) {
                             let delay = retry::compute_delay(&self.retry_policy, attempt, None);
                             tokio::time::sleep(delay).await;
                             attempt += 1;
@@ -524,11 +532,41 @@ impl Cirrus {
             {
                 AuthRetry::Retry => {
                     auth_retried = true;
+                    attempt = 0;
                     continue;
                 }
                 AuthRetry::Done => return result,
             }
         }
+    }
+
+    async fn send<R, Q, B>(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        query: Option<&Q>,
+        body: Option<&B>,
+    ) -> CirrusResult<R>
+    where
+        R: DeserializeOwned,
+        Q: Serialize + ?Sized,
+        B: Serialize + ?Sized,
+    {
+        self.dispatch(
+            &method,
+            |token: &str| {
+                let mut request = self.client.request(method.clone(), url).bearer_auth(token);
+                if let Some(q) = query {
+                    request = request.query(q);
+                }
+                if let Some(b) = body {
+                    request = request.json(b);
+                }
+                Ok(request)
+            },
+            |status, _headers, bytes| response::parse_response_bytes(status, &bytes),
+        )
+        .await
     }
 
     /// Sends a request with a raw body (e.g. CSV) and a custom Content-Type,
@@ -548,67 +586,20 @@ impl Cirrus {
         R: DeserializeOwned,
     {
         let url = self.resolve_url(path);
-        let mut auth_retried = false;
-        let mut attempt: u32 = 0;
-        loop {
-            let token = self.auth.access_token().await?;
-
-            let result: CirrusResult<R> = loop {
+        self.dispatch(
+            &method,
+            |token: &str| {
                 // bytes::Bytes is Arc-backed — clone is cheap.
-                let request = self
+                Ok(self
                     .client
                     .request(method.clone(), &url)
-                    .bearer_auth(&*token)
+                    .bearer_auth(token)
                     .header(reqwest::header::CONTENT_TYPE, content_type)
-                    .body(body.clone());
-
-                match request.send().await {
-                    Ok(response) => {
-                        let status = response.status().as_u16();
-                        let headers = response.headers().clone();
-                        self.update_limit_info(&headers);
-
-                        if retry::should_retry_status(&self.retry_policy, &method, status, attempt)
-                        {
-                            let _ = response.bytes().await;
-                            let retry_after = retry::parse_retry_after(&headers);
-                            let delay =
-                                retry::compute_delay(&self.retry_policy, attempt, retry_after);
-                            tokio::time::sleep(delay).await;
-                            attempt += 1;
-                            continue;
-                        }
-
-                        match response.bytes().await {
-                            Ok(b) => break response::parse_response_bytes(status, &b),
-                            Err(e) => break Err(e.into()),
-                        }
-                    }
-                    Err(e) => {
-                        let err: CirrusError = e.into();
-                        if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
-                            let delay = retry::compute_delay(&self.retry_policy, attempt, None);
-                            tokio::time::sleep(delay).await;
-                            attempt += 1;
-                            continue;
-                        }
-                        break Err(err);
-                    }
-                }
-            };
-
-            let is_retryable_401 = matches!(&result, Err(CirrusError::Api { status: 401, .. }));
-            match self
-                .auth_retry_decision(is_retryable_401, &token, auth_retried)
-                .await?
-            {
-                AuthRetry::Retry => {
-                    auth_retried = true;
-                    continue;
-                }
-                AuthRetry::Done => return result,
-            }
-        }
+                    .body(body.clone()))
+            },
+            |status, _headers, bytes| response::parse_response_bytes(status, &bytes),
+        )
+        .await
     }
 
     /// Sends a multipart/form-data request with one JSON metadata part
@@ -644,12 +635,9 @@ impl Cirrus {
         R: DeserializeOwned,
     {
         let url = self.resolve_url(path);
-        let mut auth_retried = false;
-        let mut attempt: u32 = 0;
-        loop {
-            let token = self.auth.access_token().await?;
-
-            let result: CirrusResult<R> = loop {
+        self.dispatch(
+            &method,
+            |token: &str| {
                 // Build a fresh Form per attempt — Form isn't Clone.
                 // The Vec<u8> JSON clone is one alloc (typically <1KB
                 // metadata). The blob goes through Part::stream so that
@@ -672,59 +660,15 @@ impl Cirrus {
                     .part(json_part_name.to_string(), json_part)
                     .part(blob_part_name.to_string(), blob_part);
 
-                let request = self
+                Ok(self
                     .client
                     .request(method.clone(), &url)
-                    .bearer_auth(&*token)
-                    .multipart(form);
-
-                match request.send().await {
-                    Ok(response) => {
-                        let status = response.status().as_u16();
-                        let headers = response.headers().clone();
-                        self.update_limit_info(&headers);
-
-                        if retry::should_retry_status(&self.retry_policy, &method, status, attempt)
-                        {
-                            let _ = response.bytes().await;
-                            let retry_after = retry::parse_retry_after(&headers);
-                            let delay =
-                                retry::compute_delay(&self.retry_policy, attempt, retry_after);
-                            tokio::time::sleep(delay).await;
-                            attempt += 1;
-                            continue;
-                        }
-
-                        match response.bytes().await {
-                            Ok(b) => break response::parse_response_bytes(status, &b),
-                            Err(e) => break Err(e.into()),
-                        }
-                    }
-                    Err(e) => {
-                        let err: CirrusError = e.into();
-                        if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
-                            let delay = retry::compute_delay(&self.retry_policy, attempt, None);
-                            tokio::time::sleep(delay).await;
-                            attempt += 1;
-                            continue;
-                        }
-                        break Err(err);
-                    }
-                }
-            };
-
-            let is_retryable_401 = matches!(&result, Err(CirrusError::Api { status: 401, .. }));
-            match self
-                .auth_retry_decision(is_retryable_401, &token, auth_retried)
-                .await?
-            {
-                AuthRetry::Retry => {
-                    auth_retried = true;
-                    continue;
-                }
-                AuthRetry::Done => return result,
-            }
-        }
+                    .bearer_auth(token)
+                    .multipart(form))
+            },
+            |status, _headers, bytes| response::parse_response_bytes(status, &bytes),
+        )
+        .await
     }
 
     /// Fetches a response as raw bytes (e.g. CSV) plus its headers, with
@@ -742,72 +686,28 @@ impl Cirrus {
         query: Option<&[(&str, &str)]>,
     ) -> CirrusResult<(reqwest::header::HeaderMap, bytes::Bytes)> {
         let url = self.resolve_url(path);
-        let mut auth_retried = false;
-        let mut attempt: u32 = 0;
-        loop {
-            let token = self.auth.access_token().await?;
-
-            let result: CirrusResult<(reqwest::header::HeaderMap, bytes::Bytes)> = loop {
+        self.dispatch(
+            &method,
+            |token: &str| {
                 let mut request = self
                     .client
                     .request(method.clone(), &url)
-                    .bearer_auth(&*token)
+                    .bearer_auth(token)
                     .header(reqwest::header::ACCEPT, accept);
                 if let Some(q) = query {
                     request = request.query(q);
                 }
-
-                match request.send().await {
-                    Ok(response) => {
-                        let status = response.status().as_u16();
-                        let headers = response.headers().clone();
-                        self.update_limit_info(&headers);
-
-                        if retry::should_retry_status(&self.retry_policy, &method, status, attempt)
-                        {
-                            let _ = response.bytes().await;
-                            let retry_after = retry::parse_retry_after(&headers);
-                            let delay =
-                                retry::compute_delay(&self.retry_policy, attempt, retry_after);
-                            tokio::time::sleep(delay).await;
-                            attempt += 1;
-                            continue;
-                        }
-
-                        let bytes = match response.bytes().await {
-                            Ok(b) => b,
-                            Err(e) => break Err(e.into()),
-                        };
-                        if (200..300).contains(&status) {
-                            break Ok((headers, bytes));
-                        }
-                        break Err(response::parse_error_response(status, &bytes));
-                    }
-                    Err(e) => {
-                        let err: CirrusError = e.into();
-                        if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
-                            let delay = retry::compute_delay(&self.retry_policy, attempt, None);
-                            tokio::time::sleep(delay).await;
-                            attempt += 1;
-                            continue;
-                        }
-                        break Err(err);
-                    }
+                Ok(request)
+            },
+            |status, headers, bytes| {
+                if (200..300).contains(&status) {
+                    Ok((headers, bytes))
+                } else {
+                    Err(response::parse_error_response(status, &bytes))
                 }
-            };
-
-            let is_retryable_401 = matches!(&result, Err(CirrusError::Api { status: 401, .. }));
-            match self
-                .auth_retry_decision(is_retryable_401, &token, auth_retried)
-                .await?
-            {
-                AuthRetry::Retry => {
-                    auth_retried = true;
-                    continue;
-                }
-                AuthRetry::Done => return result,
-            }
-        }
+            },
+        )
+        .await
     }
 
     /// Sends a GET with arbitrary extra headers, returning the
@@ -828,77 +728,30 @@ impl Cirrus {
         extra_headers: &[(&str, &str)],
     ) -> CirrusResult<(u16, bytes::Bytes)> {
         let url = self.resolve_url(path);
-        let mut auth_retried = false;
-        let mut attempt: u32 = 0;
-        loop {
-            let token = self.auth.access_token().await?;
-
-            let result: CirrusResult<(u16, bytes::Bytes)> = loop {
-                let mut request = self
-                    .client
-                    .request(method.clone(), &url)
-                    .bearer_auth(&*token);
+        self.dispatch(
+            &method,
+            |token: &str| {
+                let mut request = self.client.request(method.clone(), &url).bearer_auth(token);
                 for (name, value) in extra_headers {
                     request = request.header(*name, *value);
                 }
                 if let Some(q) = query {
                     request = request.query(q);
                 }
-
-                match request.send().await {
-                    Ok(response) => {
-                        let status = response.status().as_u16();
-                        let headers = response.headers().clone();
-                        self.update_limit_info(&headers);
-
-                        if retry::should_retry_status(&self.retry_policy, &method, status, attempt)
-                        {
-                            let _ = response.bytes().await;
-                            let retry_after = retry::parse_retry_after(&headers);
-                            let delay =
-                                retry::compute_delay(&self.retry_policy, attempt, retry_after);
-                            tokio::time::sleep(delay).await;
-                            attempt += 1;
-                            continue;
-                        }
-
-                        let bytes = match response.bytes().await {
-                            Ok(b) => b,
-                            Err(e) => break Err(e.into()),
-                        };
-                        // 304 is "use your cache" — not an error from
-                        // the conditional-request perspective. 2xx is
-                        // success. Other non-2xx → error.
-                        if (200..300).contains(&status) || status == 304 {
-                            break Ok((status, bytes));
-                        }
-                        break Err(response::parse_error_response(status, &bytes));
-                    }
-                    Err(e) => {
-                        let err: CirrusError = e.into();
-                        if retry::should_retry_network(&self.retry_policy, &method, &err, attempt) {
-                            let delay = retry::compute_delay(&self.retry_policy, attempt, None);
-                            tokio::time::sleep(delay).await;
-                            attempt += 1;
-                            continue;
-                        }
-                        break Err(err);
-                    }
+                Ok(request)
+            },
+            |status, _headers, bytes| {
+                // 304 is "use your cache" — not an error from
+                // the conditional-request perspective. 2xx is
+                // success. Other non-2xx → error.
+                if (200..300).contains(&status) || status == 304 {
+                    Ok((status, bytes))
+                } else {
+                    Err(response::parse_error_response(status, &bytes))
                 }
-            };
-
-            let is_retryable_401 = matches!(&result, Err(CirrusError::Api { status: 401, .. }));
-            match self
-                .auth_retry_decision(is_retryable_401, &token, auth_retried)
-                .await?
-            {
-                AuthRetry::Retry => {
-                    auth_retried = true;
-                    continue;
-                }
-                AuthRetry::Done => return result,
-            }
-        }
+            },
+        )
+        .await
     }
 }
 
@@ -1646,6 +1499,70 @@ mod tests {
             let inv = auth.invalidations.lock().unwrap();
             assert_eq!(inv.len(), 1);
             assert_eq!(inv[0], "old");
+        }
+
+        #[tokio::test]
+        async fn transient_retry_budget_resets_after_auth_refresh() {
+            // Each auth pass gets its own full transient-retry budget.
+            // With max_retries = 1, pass one spends its whole budget on
+            // the first 503 — the post-refresh 503 is only survivable
+            // if the attempt counter reset alongside the token.
+            let server = MockServer::start().await;
+
+            // Pass 1 (Bearer old): 503 → transient retry → 401 → refresh.
+            Mock::given(method("GET"))
+                .and(path("/services/data/v66.0/limits"))
+                .and(header("authorization", "Bearer old"))
+                .respond_with(ResponseTemplate::new(503))
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/services/data/v66.0/limits"))
+                .and(header("authorization", "Bearer old"))
+                .respond_with(ResponseTemplate::new(401).set_body_json(json!([{
+                    "errorCode": "INVALID_SESSION_ID",
+                    "message": "Session expired or invalid"
+                }])))
+                .expect(1)
+                .mount(&server)
+                .await;
+            // Pass 2 (Bearer new): 503 → transient retry → 200.
+            Mock::given(method("GET"))
+                .and(path("/services/data/v66.0/limits"))
+                .and(header("authorization", "Bearer new"))
+                .respond_with(ResponseTemplate::new(503))
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/services/data/v66.0/limits"))
+                .and(header("authorization", "Bearer new"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let auth = Arc::new(RotatingAuth::new(server.uri(), vec!["old", "new"]));
+            let sf = Cirrus::builder()
+                .auth(auth.clone())
+                .retry_policy(crate::RetryPolicy {
+                    max_retries: 1,
+                    base_delay: std::time::Duration::ZERO,
+                    max_delay: std::time::Duration::ZERO,
+                    jitter: false,
+                    ..crate::RetryPolicy::default()
+                })
+                .build()
+                .unwrap();
+
+            let v: Value = sf.get("limits").await.unwrap();
+            assert_eq!(v["ok"], true);
+
+            let inv = auth.invalidations.lock().unwrap();
+            assert_eq!(*inv, vec!["old"]);
         }
 
         #[tokio::test]

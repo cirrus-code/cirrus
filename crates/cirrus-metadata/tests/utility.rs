@@ -189,6 +189,23 @@ async fn list_metadata_rejects_more_than_three_queries() {
     }
 }
 
+#[tokio::test]
+async fn list_metadata_rejects_empty_query_list() {
+    // No mock server needed — the rejection happens client-side, before
+    // a zero-query envelope can reach the server (which would answer
+    // with an opaque SOAP fault).
+    let auth = Arc::new(StaticTokenAuth::new("tok", "https://x.example.com"));
+    let md = MetadataClient::builder().auth(auth).build().unwrap();
+
+    let err = md.list_metadata(Vec::new(), "66.0").await.unwrap_err();
+    match err {
+        MetadataError::InvalidArgument(msg) => {
+            assert!(msg.contains("at least one"));
+        }
+        other => panic!("expected InvalidArgument, got {other:?}"),
+    }
+}
+
 // -- describe_metadata -------------------------------------------------------
 
 #[tokio::test]

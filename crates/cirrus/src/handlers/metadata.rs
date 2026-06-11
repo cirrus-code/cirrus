@@ -98,13 +98,22 @@ impl MetadataHandler<'_> {
         deploy_id: &str,
         include_details: bool,
     ) -> CirrusResult<DeployRequest> {
-        let path = format!("metadata/deployRequest/{deploy_id}");
+        let url = self
+            .client
+            .versioned_segments(&["metadata", "deployRequest", deploy_id])?;
         if include_details {
             self.client
-                .get_with_query(&path, &[("includeDetails", "true")])
+                .send_at::<_, _, ()>(
+                    reqwest::Method::GET,
+                    &url,
+                    Some(&[("includeDetails", "true")]),
+                    None,
+                )
                 .await
         } else {
-            self.client.get(&path).await
+            self.client
+                .send_at(reqwest::Method::GET, &url, None::<&()>, None::<&()>)
+                .await
         }
     }
 
@@ -119,13 +128,17 @@ impl MetadataHandler<'_> {
     /// be canceled. In earlier versions, cancellation may race with the
     /// commit phase and partially-apply.
     pub async fn cancel_deploy(&self, deploy_id: &str) -> CirrusResult<DeployRequest> {
-        let path = format!("metadata/deployRequest/{deploy_id}");
+        let url = self
+            .client
+            .versioned_segments(&["metadata", "deployRequest", deploy_id])?;
         let body = CancelBody {
             deploy_result: CancelStatus {
                 status: "Canceling",
             },
         };
-        self.client.patch(&path, &body).await
+        self.client
+            .send_at(reqwest::Method::PATCH, &url, None::<&()>, Some(&body))
+            .await
     }
 
     /// Deploys a component set that was previously validated, skipping
@@ -145,11 +158,17 @@ impl MetadataHandler<'_> {
         &self,
         validated_deploy_request_id: &str,
     ) -> CirrusResult<DeployRequest> {
-        let path = format!("metadata/deployRequest/{validated_deploy_request_id}");
+        let url = self.client.versioned_segments(&[
+            "metadata",
+            "deployRequest",
+            validated_deploy_request_id,
+        ])?;
         let body = RecentValidationBody {
             validated_deploy_request_id,
         };
-        self.client.post(&path, &body).await
+        self.client
+            .send_at(reqwest::Method::POST, &url, None::<&()>, Some(&body))
+            .await
     }
 }
 

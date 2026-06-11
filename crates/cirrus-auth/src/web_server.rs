@@ -78,7 +78,7 @@ const STATE_BYTES: usize = 16;
 /// Configures the OAuth 2.0 Web Server flow.
 ///
 /// Construct via [`WebServerFlow::builder`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WebServerFlow {
     consumer_key: String,
     consumer_secret: Option<String>,
@@ -87,6 +87,25 @@ pub struct WebServerFlow {
     scopes: Vec<String>,
     prompt: Option<String>,
     login_hint: Option<String>,
+}
+
+// The connected app's client secret (and the key identifying it) must
+// never reach logs — redact in `{:?}`.
+impl std::fmt::Debug for WebServerFlow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebServerFlow")
+            .field("consumer_key", &"[redacted]")
+            .field(
+                "consumer_secret",
+                &self.consumer_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("redirect_uri", &self.redirect_uri)
+            .field("login_url", &self.login_url)
+            .field("scopes", &self.scopes)
+            .field("prompt", &self.prompt)
+            .field("login_hint", &self.login_hint)
+            .finish()
+    }
 }
 
 impl WebServerFlow {
@@ -460,6 +479,20 @@ mod tests {
                 "non-url-safe char in: {s}"
             );
         }
+    }
+
+    #[test]
+    fn flow_debug_redacts_credentials() {
+        let flow = flow_with_required_fields()
+            .consumer_secret("super-secret-value")
+            .build()
+            .unwrap();
+        let debug = format!("{flow:?}");
+        assert!(!debug.contains("super-secret-value"), "leaked: {debug}");
+        assert!(!debug.contains("consumer-key-123"), "leaked: {debug}");
+        assert!(debug.contains("[redacted]"));
+        // Non-secret config stays visible for diagnostics.
+        assert!(debug.contains("https://app.example.com/oauth/callback"));
     }
 
     #[test]

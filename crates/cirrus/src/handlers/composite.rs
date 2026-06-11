@@ -406,7 +406,7 @@ impl CompositeSObjectsHandler<'_> {
     ) -> CirrusResult<Vec<SObjectCollectionResult>> {
         let joined = ids.join(",");
         let all = if all_or_none { "true" } else { "false" };
-        let url = self.client.resolve_url("composite/sobjects");
+        let url = self.client.versioned_segments(&["composite", "sobjects"])?;
         self.client
             .send_at::<_, _, ()>(
                 reqwest::Method::DELETE,

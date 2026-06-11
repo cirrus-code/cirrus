@@ -74,7 +74,8 @@ pub use pagination::Records;
 pub use response::LimitInfo;
 pub use response::{
     ApiVersion, BatchResponse, BatchSubresult, BulkColumnDelimiter, BulkIngestJob, BulkJobState,
-    BulkLineEnding, BulkOperation, BulkQueryJob, BulkQueryResults, CompositeError,
+    BulkJobStateChange, BulkLineEnding, BulkOperation, BulkQueryJob, BulkQueryResults,
+    CompositeError,
     CompositeResponse, CompositeSubresponse, CompositeTreeResponse, CompositeTreeResult,
     DescribeGlobal, EventLogFileRecord, ExecuteAnonymousResult, Limit, OrgLimits, QueryResult,
     SObjectCollectionResult, SObjectCreateResult, SObjectMetadata, SearchResult,

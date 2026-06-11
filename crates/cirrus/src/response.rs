@@ -327,6 +327,59 @@ pub struct BulkIngestJob {
     pub error_message: Option<String>,
 }
 
+/// Response from the state-transition PATCH endpoints:
+/// `PATCH /jobs/ingest/{jobId}` (close or abort an ingest job) and
+/// `PATCH /jobs/query/{jobId}` (abort a query job).
+///
+/// This is a partial view of the job, not the full [`BulkIngestJob`] /
+/// [`BulkQueryJob`]: Salesforce omits `jobType`, `lineEnding`, and
+/// `columnDelimiter` from PATCH responses. To read the full job
+/// metadata after a state change, follow up with a GET
+/// ([`BulkIngestHandler::get`] / [`BulkQueryHandler::get`]).
+///
+/// [`BulkIngestHandler::get`]: crate::handlers::bulk::BulkIngestHandler::get
+/// [`BulkQueryHandler::get`]: crate::handlers::bulk::BulkQueryHandler::get
+//
+// Wire-shape provenance (api_asynch doc page IDs):
+// - `query_abort_job` documents this exact shape, with an example
+//   response containing only the ten always-present fields below.
+// - The ingest pages (`close_job`, `abort_job`) reuse the generic
+//   job-info field table (which lists `jobType`/`lineEnding`/
+//   `columnDelimiter`), but live API v66.0 PATCH responses match the
+//   query example: the formatting fields and `jobType` are absent.
+// - `externalIdFieldName` and `assignmentRuleId` are listed as
+//   conditionally present on the ingest pages; they never apply to
+//   query jobs.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BulkJobStateChange {
+    pub id: String,
+    pub operation: BulkOperation,
+    pub object: String,
+    pub state: BulkJobState,
+    /// The wire sends a JSON number (e.g. `60.0`), so this is a float
+    /// rather than the `String` used by [`ApiVersion::version`].
+    #[serde(rename = "apiVersion")]
+    pub api_version: f64,
+    #[serde(rename = "concurrencyMode")]
+    pub concurrency_mode: String,
+    #[serde(rename = "contentType")]
+    pub content_type: String,
+    #[serde(rename = "createdById")]
+    pub created_by_id: String,
+    #[serde(rename = "createdDate")]
+    pub created_date: String,
+    #[serde(rename = "systemModstamp")]
+    pub system_modstamp: String,
+    /// External ID field of an ingest upsert job. `None` for the other
+    /// ingest operations and for query jobs.
+    #[serde(rename = "externalIdFieldName", default)]
+    pub external_id_field_name: Option<String>,
+    /// Assignment rule, present only when one was specified at job
+    /// creation (ingest jobs only).
+    #[serde(rename = "assignmentRuleId", default)]
+    pub assignment_rule_id: Option<String>,
+}
+
 /// Response from `POST /jobs/query` and `GET /jobs/query/{jobId}`.
 ///
 /// Field availability varies by job state and request kind:
@@ -1229,6 +1282,59 @@ mod tests {
             job.error_message.as_deref(),
             Some("InvalidJobState : Aborted by user")
         );
+    }
+
+    #[test]
+    fn parses_bulk_job_state_change_from_documented_query_abort_example() {
+        // Verbatim example response from the api_asynch query_abort_job
+        // doc. State-transition PATCH responses omit `jobType`,
+        // `lineEnding`, and `columnDelimiter`.
+        let body = json!({
+            "id": "750R000000146UvIAI",
+            "operation": "query",
+            "object": "Account",
+            "createdById": "005R0000000GiwjIAC",
+            "createdDate": "2018-12-18T20:51:39.000+0000",
+            "systemModstamp": "2018-12-18T20:51:41.000+0000",
+            "state": "Aborted",
+            "concurrencyMode": "Parallel",
+            "contentType": "CSV",
+            "apiVersion": 46.0
+        })
+        .to_string();
+        let job: BulkJobStateChange = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert_eq!(job.id, "750R000000146UvIAI");
+        assert_eq!(job.operation, BulkOperation::Query);
+        assert_eq!(job.state, BulkJobState::Aborted);
+        assert_eq!(job.content_type, "CSV");
+        assert!(job.external_id_field_name.is_none());
+        assert!(job.assignment_rule_id.is_none());
+    }
+
+    #[test]
+    fn parses_bulk_job_state_change_from_live_ingest_close() {
+        // Captured from a live PATCH /jobs/ingest/{id} close response
+        // (API v66.0). Same partial shape as the query abort example —
+        // the ingest close_job/abort_job doc pages reuse the generic
+        // job-info field table, but the wire omits the formatting
+        // fields and `jobType`.
+        let body = json!({
+            "id": "7509H000003sGVwQAM",
+            "object": "Account",
+            "operation": "update",
+            "state": "UploadComplete",
+            "apiVersion": 66.0,
+            "concurrencyMode": "Parallel",
+            "contentType": "CSV",
+            "createdById": "0059H000009Bzb6QAC",
+            "createdDate": "2026-06-06T18:14:41.000+0000",
+            "systemModstamp": "2026-06-06T18:14:41.000+0000"
+        })
+        .to_string();
+        let job: BulkJobStateChange = parse_response_bytes(200, body.as_bytes()).unwrap();
+        assert_eq!(job.id, "7509H000003sGVwQAM");
+        assert_eq!(job.operation, BulkOperation::Update);
+        assert_eq!(job.state, BulkJobState::UploadComplete);
     }
 
     #[test]

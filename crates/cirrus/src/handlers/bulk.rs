@@ -221,11 +221,7 @@ impl BulkIngestHandler<'_> {
         self.fetch_csv_results(job_id, "unprocessedrecords").await
     }
 
-    async fn patch_state(
-        &self,
-        job_id: &str,
-        new_state: &str,
-    ) -> CirrusResult<BulkJobStateChange> {
+    async fn patch_state(&self, job_id: &str, new_state: &str) -> CirrusResult<BulkJobStateChange> {
         let path = self
             .client
             .versioned_segments(&["jobs", "ingest", job_id])?;
@@ -564,8 +560,11 @@ mod tests {
             .and(path("/services/data/v66.0/jobs/ingest/750xx"))
             .and(body_json(json!({"state": "UploadComplete"})))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(state_change_response("750xx", "update", "UploadComplete")),
+                ResponseTemplate::new(200).set_body_json(state_change_response(
+                    "750xx",
+                    "update",
+                    "UploadComplete",
+                )),
             )
             .mount(&server)
             .await;

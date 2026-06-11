@@ -75,10 +75,10 @@ pub use response::LimitInfo;
 pub use response::{
     ApiVersion, BatchResponse, BatchSubresult, BulkColumnDelimiter, BulkIngestJob, BulkJobState,
     BulkJobStateChange, BulkLineEnding, BulkOperation, BulkQueryJob, BulkQueryResults,
-    CompositeError,
-    CompositeResponse, CompositeSubresponse, CompositeTreeResponse, CompositeTreeResult,
-    DescribeGlobal, EventLogFileRecord, ExecuteAnonymousResult, Limit, OrgLimits, QueryResult,
-    SObjectCollectionResult, SObjectCreateResult, SObjectMetadata, SearchResult,
+    CompositeError, CompositeResponse, CompositeSubresponse, CompositeTreeResponse,
+    CompositeTreeResult, DescribeGlobal, EventLogFileRecord, ExecuteAnonymousResult, Limit,
+    OrgLimits, QueryResult, SObjectCollectionResult, SObjectCreateResult, SObjectMetadata,
+    SearchResult,
 };
 pub use retry::RetryPolicy;
 

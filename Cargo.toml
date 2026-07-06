@@ -14,7 +14,7 @@ homepage = "https://github.com/cirrus-code/cirrus"
 # crates can be published to crates.io — Cargo uses `path` for local
 # workspace builds and `version` for the published manifest.
 cirrus-auth = { path = "crates/cirrus-auth", version = "0.3.0" }
-cirrus-metadata = { path = "crates/cirrus-metadata", version = "0.1.1" }
+cirrus-metadata = { path = "crates/cirrus-metadata", version = "0.2.0" }
 
 # Runtime / HTTP
 reqwest = { version = "0.13", default-features = false, features = ["form", "json", "multipart", "query", "rustls", "charset", "system-proxy"] }

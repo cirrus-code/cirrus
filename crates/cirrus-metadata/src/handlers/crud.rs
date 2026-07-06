@@ -33,8 +33,10 @@
 //! ## Per-call component cap
 //!
 //! All five "multi" CRUD calls cap at 10 components per call (server
-//! limit). The SDK enforces this client-side via
-//! [`MAX_CRUD_COMPONENTS_PER_CALL`] — passing more returns
+//! limit), except `CustomMetadata` and `CustomApplication`, which
+//! Salesforce documents at 200. The SDK enforces this client-side via
+//! [`MAX_CRUD_COMPONENTS_PER_CALL`] /
+//! [`MAX_CRUD_COMPONENTS_PER_CALL_LARGE`] — passing more returns
 //! [`MetadataError::InvalidArgument`] before hitting the wire.
 //!
 //! [`deploy`]: crate::MetadataClient::deploy
@@ -52,8 +54,23 @@ use std::marker::PhantomData;
 
 /// Salesforce server limit on per-call component count for
 /// `createMetadata`, `updateMetadata`, `upsertMetadata`,
-/// `readMetadata`, and `deleteMetadata`.
+/// `readMetadata`, and `deleteMetadata`. `CustomMetadata` and
+/// `CustomApplication` are the documented exceptions — see
+/// [`MAX_CRUD_COMPONENTS_PER_CALL_LARGE`].
 pub const MAX_CRUD_COMPONENTS_PER_CALL: usize = 10;
+
+/// Raised per-call component limit for `CustomMetadata` and
+/// `CustomApplication`, the two types Salesforce documents at 200
+/// components per CRUD call.
+pub const MAX_CRUD_COMPONENTS_PER_CALL_LARGE: usize = 200;
+
+/// The documented per-call cap for a metadata type.
+fn per_call_cap(type_name: &str) -> usize {
+    match type_name {
+        "CustomMetadata" | "CustomApplication" => MAX_CRUD_COMPONENTS_PER_CALL_LARGE,
+        _ => MAX_CRUD_COMPONENTS_PER_CALL,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -89,16 +106,16 @@ fn render_type_and_full_names<S: AsRef<str>>(type_name: &str, full_names: &[S], 
     }
 }
 
-fn check_component_cap(count: usize, op_label: &str) -> MetadataResult<()> {
+fn check_component_cap(count: usize, type_name: &str, op_label: &str) -> MetadataResult<()> {
     if count == 0 {
         return Err(MetadataError::InvalidArgument(format!(
             "{op_label} requires at least one component; got 0"
         )));
     }
-    if count > MAX_CRUD_COMPONENTS_PER_CALL {
+    let cap = per_call_cap(type_name);
+    if count > cap {
         return Err(MetadataError::InvalidArgument(format!(
-            "{op_label} accepts at most {MAX_CRUD_COMPONENTS_PER_CALL} components per call; \
-             got {count}"
+            "{op_label} accepts at most {cap} {type_name} components per call; got {count}"
         )));
     }
     Ok(())
@@ -296,7 +313,7 @@ impl MetadataClient {
         type_name: &str,
         components: &[S],
     ) -> MetadataResult<Vec<SaveResult>> {
-        check_component_cap(components.len(), "create_metadata")?;
+        check_component_cap(components.len(), type_name, "create_metadata")?;
         let op = CreateMetadataOp {
             type_name,
             components,
@@ -315,7 +332,7 @@ impl MetadataClient {
         type_name: &str,
         components: &[S],
     ) -> MetadataResult<Vec<SaveResult>> {
-        check_component_cap(components.len(), "update_metadata")?;
+        check_component_cap(components.len(), type_name, "update_metadata")?;
         let op = UpdateMetadataOp {
             type_name,
             components,
@@ -335,7 +352,7 @@ impl MetadataClient {
         type_name: &str,
         components: &[S],
     ) -> MetadataResult<Vec<UpsertResult>> {
-        check_component_cap(components.len(), "upsert_metadata")?;
+        check_component_cap(components.len(), type_name, "upsert_metadata")?;
         let op = UpsertMetadataOp {
             type_name,
             components,
@@ -353,7 +370,7 @@ impl MetadataClient {
         type_name: &str,
         full_names: &[S],
     ) -> MetadataResult<Vec<DeleteResult>> {
-        check_component_cap(full_names.len(), "delete_metadata")?;
+        check_component_cap(full_names.len(), type_name, "delete_metadata")?;
         let op = DeleteMetadataOp {
             type_name,
             full_names,
@@ -398,7 +415,7 @@ impl MetadataClient {
         T: DeserializeOwned,
         S: AsRef<str>,
     {
-        check_component_cap(full_names.len(), "read_metadata")?;
+        check_component_cap(full_names.len(), type_name, "read_metadata")?;
         let op = ReadMetadataOp::<T, S> {
             type_name,
             full_names,
@@ -524,13 +541,13 @@ mod tests {
 
     #[test]
     fn check_component_cap_rejects_empty_input() {
-        let err = check_component_cap(0, "create_metadata").unwrap_err();
+        let err = check_component_cap(0, "ApexClass", "create_metadata").unwrap_err();
         assert!(err.to_string().contains("at least one"));
     }
 
     #[test]
     fn check_component_cap_rejects_more_than_ten() {
-        let err = check_component_cap(11, "delete_metadata").unwrap_err();
+        let err = check_component_cap(11, "ApexClass", "delete_metadata").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("10"));
         assert!(msg.contains("11"));
@@ -539,7 +556,27 @@ mod tests {
     #[test]
     fn check_component_cap_accepts_one_to_ten() {
         for n in 1..=10 {
-            assert!(check_component_cap(n, "x").is_ok(), "should accept {n}");
+            assert!(
+                check_component_cap(n, "ApexClass", "x").is_ok(),
+                "should accept {n}"
+            );
+        }
+    }
+
+    /// CustomMetadata / CustomApplication carry a documented 200-component
+    /// cap (meta_createMetadata: "Limit: 10. (For CustomMetadata and
+    /// CustomApplication only, the limit is 200.)").
+    #[test]
+    fn check_component_cap_allows_200_for_documented_large_types() {
+        for ty in ["CustomMetadata", "CustomApplication"] {
+            assert!(check_component_cap(11, ty, "x").is_ok());
+            assert!(check_component_cap(200, ty, "x").is_ok());
+            let err = check_component_cap(201, ty, "x").unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("200"),
+                "message should cite the 200 cap: {msg}"
+            );
         }
     }
 }

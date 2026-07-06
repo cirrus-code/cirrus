@@ -86,8 +86,7 @@ trait so handlers don't care which flow you used.
   `auth::ClientCredentialsAuth::builder()`
 - **Web Server with PKCE** (RFC 6749 §4.1 + RFC 7636) —
   `auth::WebServerFlow::builder()`
-- **Token Exchange** (RFC 8693) — `auth::TokenExchange::builder()`, including
-  hybrid grant
+- **Token Exchange** (RFC 8693) — `auth::TokenExchangeFlow::builder()`
 - **Static token** — `auth::StaticTokenAuth::new(token, instance_url)` for
   paste-from-`sf-org-display` workflows
 

@@ -12,10 +12,9 @@
 //!
 //! POST `/services/oauth2/token` with form body:
 //!
-//! - `grant_type` — either
-//!   `urn:ietf:params:oauth:grant-type:token-exchange` (default) or
-//!   `urn:ietf:params:oauth:grant-type:hybrid-token-exchange`
-//!   for hybrid mobile apps.
+//! - `grant_type` — always
+//!   `urn:ietf:params:oauth:grant-type:token-exchange` (the RFC 8693
+//!   URN; Salesforce's token-exchange docs define no other value).
 //! - `subject_token` — the IdP-issued token (max 10,000 chars per docs).
 //! - `subject_token_type` — one of the five well-known URNs in
 //!   [`SubjectTokenType`].
@@ -48,33 +47,9 @@
 use crate::error::{AuthError, AuthResult};
 use crate::token_endpoint::exchange;
 
-/// RFC 8693 grant-type URN for the regular token exchange flow.
+/// RFC 8693 grant-type URN — the only `grant_type` Salesforce's token
+/// exchange flow accepts.
 pub const GRANT_TYPE_TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
-
-/// Salesforce-specific grant-type URN for the hybrid mobile-app variant.
-pub const GRANT_TYPE_HYBRID_TOKEN_EXCHANGE: &str =
-    "urn:ietf:params:oauth:grant-type:hybrid-token-exchange";
-
-/// Which `grant_type` URN the request should send.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum TokenExchangeGrantType {
-    /// `urn:ietf:params:oauth:grant-type:token-exchange` — the standard flow.
-    #[default]
-    TokenExchange,
-    /// `urn:ietf:params:oauth:grant-type:hybrid-token-exchange` — for hybrid
-    /// mobile apps that need both a UI session and an API session.
-    HybridTokenExchange,
-}
-
-impl TokenExchangeGrantType {
-    /// Returns the URN that should appear in the form body's `grant_type`.
-    pub fn as_urn(self) -> &'static str {
-        match self {
-            Self::TokenExchange => GRANT_TYPE_TOKEN_EXCHANGE,
-            Self::HybridTokenExchange => GRANT_TYPE_HYBRID_TOKEN_EXCHANGE,
-        }
-    }
-}
 
 /// RFC 8693 `subject_token_type` URNs supported by Salesforce.
 ///
@@ -122,7 +97,6 @@ pub struct TokenExchangeFlow {
     login_url: String,
     subject_token: String,
     subject_token_type: SubjectTokenType,
-    grant_type: TokenExchangeGrantType,
     scopes: Vec<String>,
     token_handler: Option<String>,
     http: reqwest::Client,
@@ -143,7 +117,6 @@ impl std::fmt::Debug for TokenExchangeFlow {
             .field("login_url", &self.login_url)
             .field("subject_token", &"[redacted]")
             .field("subject_token_type", &self.subject_token_type)
-            .field("grant_type", &self.grant_type)
             .field("scopes", &self.scopes)
             .field("token_handler", &self.token_handler)
             .finish_non_exhaustive()
@@ -164,7 +137,7 @@ impl TokenExchangeFlow {
     pub async fn exchange(self) -> AuthResult<TokenExchangeSession> {
         let scope_joined;
         let mut body: Vec<(&str, &str)> = vec![
-            ("grant_type", self.grant_type.as_urn()),
+            ("grant_type", GRANT_TYPE_TOKEN_EXCHANGE),
             ("subject_token", self.subject_token.as_str()),
             ("subject_token_type", self.subject_token_type.as_urn()),
             ("client_id", self.consumer_key.as_str()),
@@ -249,7 +222,6 @@ pub struct TokenExchangeFlowBuilder {
     login_url: Option<String>,
     subject_token: Option<String>,
     subject_token_type: Option<SubjectTokenType>,
-    grant_type: Option<TokenExchangeGrantType>,
     scopes: Vec<String>,
     token_handler: Option<String>,
     http_client: Option<reqwest::Client>,
@@ -263,7 +235,6 @@ impl std::fmt::Debug for TokenExchangeFlowBuilder {
             .field("login_url", &self.login_url)
             .field("subject_token", &self.subject_token.is_some())
             .field("subject_token_type", &self.subject_token_type)
-            .field("grant_type", &self.grant_type)
             .field("scopes", &self.scopes)
             .field("token_handler", &self.token_handler)
             .finish_non_exhaustive()
@@ -305,15 +276,6 @@ impl TokenExchangeFlowBuilder {
     /// The type of the IdP token. Required.
     pub fn subject_token_type(mut self, ty: SubjectTokenType) -> Self {
         self.subject_token_type = Some(ty);
-        self
-    }
-
-    /// Override the grant type. Defaults to
-    /// [`TokenExchangeGrantType::TokenExchange`]; switch to
-    /// [`TokenExchangeGrantType::HybridTokenExchange`] for hybrid mobile
-    /// apps that need a UI session in addition to API access.
-    pub fn grant_type(mut self, gt: TokenExchangeGrantType) -> Self {
-        self.grant_type = Some(gt);
         self
     }
 
@@ -370,7 +332,6 @@ impl TokenExchangeFlowBuilder {
             login_url,
             subject_token,
             subject_token_type,
-            grant_type: self.grant_type.unwrap_or_default(),
             scopes: self.scopes,
             token_handler: self.token_handler,
             http,
@@ -423,14 +384,10 @@ mod tests {
     }
 
     #[test]
-    fn grant_type_urns_match_spec() {
+    fn grant_type_urn_matches_spec() {
         assert_eq!(
-            TokenExchangeGrantType::TokenExchange.as_urn(),
+            GRANT_TYPE_TOKEN_EXCHANGE,
             "urn:ietf:params:oauth:grant-type:token-exchange"
-        );
-        assert_eq!(
-            TokenExchangeGrantType::HybridTokenExchange.as_urn(),
-            "urn:ietf:params:oauth:grant-type:hybrid-token-exchange"
         );
     }
 
@@ -595,31 +552,6 @@ mod tests {
             !body.contains("client_secret"),
             "public client should not send client_secret, got: {body}"
         );
-    }
-
-    #[tokio::test]
-    async fn hybrid_grant_type_sets_correct_urn() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/services/oauth2/token"))
-            .and(body_string_contains(
-                "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ahybrid-token-exchange",
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "access_token": "tok",
-                "instance_url": "https://my-org.my.salesforce.com"
-            })))
-            .mount(&server)
-            .await;
-
-        builder_with_required_fields()
-            .login_url(server.uri())
-            .grant_type(TokenExchangeGrantType::HybridTokenExchange)
-            .build()
-            .unwrap()
-            .exchange()
-            .await
-            .unwrap();
     }
 
     #[tokio::test]

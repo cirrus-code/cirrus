@@ -29,8 +29,7 @@ REST client.
 - **Refresh Token** (RFC 6749 §6) — `RefreshTokenAuth::builder()`
 - **Client Credentials** (RFC 6749 §4.4) — `ClientCredentialsAuth::builder()`
 - **Web Server with PKCE** (RFC 6749 §4.1 + RFC 7636) — `WebServerFlow::builder()`
-- **Token Exchange** (RFC 8693) — `TokenExchangeFlow::builder()`, including the
-  hybrid mobile-app grant
+- **Token Exchange** (RFC 8693) — `TokenExchangeFlow::builder()`
 - **Static token** — `StaticTokenAuth::new(token, instance_url)` for
   paste-from-`sf-org-display` workflows or tests
 

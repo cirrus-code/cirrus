@@ -33,8 +33,7 @@
 //! - [`web_server`] — OAuth 2.0 Web Server flow with PKCE for
 //!   user-interactive authorization. Yields a [`RefreshTokenAuth`] once the
 //!   user comes back through the redirect URL.
-//! - [`token_exchange`] — OAuth 2.0 Token Exchange (RFC 8693), including
-//!   Salesforce's hybrid grant.
+//! - [`token_exchange`] — OAuth 2.0 Token Exchange (RFC 8693).
 //!
 //! Flows Salesforce lists as legacy or deprecated are intentionally not
 //! supported.
@@ -58,8 +57,7 @@ pub use jwt::{JwtAuth, JwtAuthBuilder};
 pub use refresh::{RefreshTokenAuth, RefreshTokenAuthBuilder};
 pub use static_token::StaticTokenAuth;
 pub use token_exchange::{
-    SubjectTokenType, TokenExchangeFlow, TokenExchangeFlowBuilder, TokenExchangeGrantType,
-    TokenExchangeSession,
+    SubjectTokenType, TokenExchangeFlow, TokenExchangeFlowBuilder, TokenExchangeSession,
 };
 pub use web_server::{CompletedSession, PendingExchange, WebServerFlow, WebServerFlowBuilder};
 

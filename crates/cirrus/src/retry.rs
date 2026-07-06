@@ -8,12 +8,21 @@
 //!
 //! This module is designed around three principles:
 //!
-//! 1. **Default to "do less."** Only retry status codes that the spec
-//!    explicitly says are retryable (429, 503), or 5xx codes on
-//!    request methods that are spec-idempotent (GET, HEAD, DELETE,
-//!    PUT). Retry-on-POST is opt-out-only territory because a
-//!    duplicate `INSERT` is a worse failure mode than a one-shot
-//!    error surfaced to the caller.
+//! 1. **Default to "do less."** 429 (rate limited — the server refused
+//!    the request without processing it) retries for any method; every
+//!    5xx, 503 included, retries only on request methods that are
+//!    spec-idempotent (GET, HEAD, DELETE, PUT), because nothing
+//!    guarantees the request wasn't processed before an intermediary
+//!    emitted the error — and a duplicate `INSERT` is a worse failure
+//!    mode than a one-shot error surfaced to the caller.
+//!
+//!    Note on Salesforce specifics: the REST API's documented
+//!    rate-limit signal is **403 with `errorCode:
+//!    REQUEST_LIMIT_EXCEEDED`** (its status-code table doesn't include
+//!    429 at all). That response is deliberately *not* retried — it
+//!    means a rolling 24-hour quota is exhausted, and replaying only
+//!    burns more of it. 429 is retried anyway because proxies and API
+//!    gateways in front of an org do emit it.
 //! 2. **Honor server hints.** When the server provides a
 //!    [`Retry-After`] header (RFC 7231 §7.1.3 delta-seconds form), use
 //!    that delay instead of our backoff schedule.
@@ -73,8 +82,9 @@ pub struct RetryPolicy {
     pub jitter: bool,
     /// When `true`, retry idempotent methods (GET, HEAD, DELETE, PUT)
     /// on transient 5xx errors (500, 502, 504). When `false`, only
-    /// retry on 429 / 503 (which Salesforce explicitly documents as
-    /// "didn't happen, retry"). Default `true`.
+    /// retry on 429 (any method) and 503 (idempotent methods — 503 is
+    /// the canonical "temporarily unavailable, try again" status, so
+    /// it stays retryable even with this flag off). Default `true`.
     ///
     /// Non-idempotent methods (POST, PATCH) are *never* retried on
     /// 5xx, regardless of this flag — duplicate-record risk outweighs
@@ -121,10 +131,17 @@ pub(crate) fn should_retry_status(
         return false;
     }
     match status {
-        // Salesforce explicitly documents these as retryable. The
-        // server is asserting the request did *not* take effect.
-        429 | 503 => true,
-        // Other 5xx — retry only if the method is spec-idempotent.
+        // Rate limited: the request was refused, not processed, so a
+        // replay is safe for any method. (Salesforce's own rate-limit
+        // signal is 403 REQUEST_LIMIT_EXCEEDED — deliberately not
+        // retried, see the module doc; 429 comes from intermediaries.)
+        429 => true,
+        // 503 is the canonical "temporarily unavailable" status, but
+        // an intermediary can emit it after the origin processed the
+        // request — so like every other 5xx it only replays when the
+        // method is spec-idempotent. Unlike 500/502/504 it stays
+        // retryable even when `retry_idempotent_5xx` is off.
+        503 => is_idempotent(method),
         500 | 502 | 504 if policy.retry_idempotent_5xx => is_idempotent(method),
         _ => false,
     }
@@ -264,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn retries_429_and_503_for_any_method() {
+    fn retries_429_for_any_method() {
         let p = RetryPolicy::default();
         for m in [
             reqwest::Method::GET,
@@ -273,18 +290,19 @@ mod tests {
             reqwest::Method::DELETE,
         ] {
             assert!(should_retry_status(&p, &m, 429, 0), "429 retry for {m}");
-            assert!(should_retry_status(&p, &m, 503, 0), "503 retry for {m}");
         }
     }
 
     #[test]
     fn retries_5xx_only_for_idempotent_methods() {
         let p = RetryPolicy::default();
-        for status in [500, 502, 504] {
+        for status in [500, 502, 503, 504] {
             assert!(should_retry_status(&p, &reqwest::Method::GET, status, 0));
             assert!(should_retry_status(&p, &reqwest::Method::DELETE, status, 0));
             assert!(should_retry_status(&p, &reqwest::Method::PUT, status, 0));
-            // Non-idempotent — never retry.
+            // Non-idempotent — never retry, 503 included: an
+            // intermediary may emit it after the origin processed
+            // the request.
             assert!(!should_retry_status(&p, &reqwest::Method::POST, status, 0));
             assert!(!should_retry_status(&p, &reqwest::Method::PATCH, status, 0));
         }
@@ -340,6 +358,8 @@ mod tests {
         assert!(should_retry_status(&p, &reqwest::Method::GET, 503, 0));
         assert!(!should_retry_status(&p, &reqwest::Method::GET, 500, 0));
         assert!(!should_retry_status(&p, &reqwest::Method::GET, 502, 0));
+        // The 503 carve-out is idempotent-methods-only.
+        assert!(!should_retry_status(&p, &reqwest::Method::POST, 503, 0));
     }
 
     #[test]

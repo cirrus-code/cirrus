@@ -38,6 +38,21 @@ struct PingResult {
 
 impl SoapOperation for Ping {
     const NAME: &'static str = "ping";
+    // Declared replay-safe so the transport's retry loop is exercised;
+    // `Mutate` below covers the non-idempotent default.
+    const IDEMPOTENT: bool = true;
+    type Response = PingResponse;
+    fn render_body(&self) -> MetadataResult<String> {
+        Ok(String::new())
+    }
+}
+
+/// Same as [`Ping`] but with the default `IDEMPOTENT = false`, standing
+/// in for mutating calls (`deploy`, `createMetadata`, …).
+struct Mutate;
+
+impl SoapOperation for Mutate {
+    const NAME: &'static str = "ping";
     type Response = PingResponse;
     fn render_body(&self) -> MetadataResult<String> {
         Ok(String::new())
@@ -344,6 +359,39 @@ async fn http_503_is_retried() {
 
     let resp = md.call(&Ping).await.unwrap();
     assert_eq!(resp.result.msg, "retried");
+}
+
+#[tokio::test]
+async fn http_503_is_not_retried_for_non_idempotent_op() {
+    let server = MockServer::start().await;
+
+    // A 503 can be emitted by an intermediary after the origin
+    // processed the request, so a mutating operation must surface it
+    // rather than replay.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let auth = Arc::new(StaticTokenAuth::new("tok", server.uri()));
+    let md = MetadataClient::builder()
+        .auth(auth)
+        .retry_policy(RetryPolicy {
+            max_retries: 2,
+            base_delay: std::time::Duration::from_millis(1),
+            max_delay: std::time::Duration::from_millis(5),
+            jitter: false,
+            ..RetryPolicy::default()
+        })
+        .build()
+        .unwrap();
+
+    let err = md.call(&Mutate).await.unwrap_err();
+    match err {
+        MetadataError::Http4xx5xx { status, .. } => assert_eq!(status, 503),
+        other => panic!("expected Http4xx5xx, got {other:?}"),
+    }
 }
 
 #[tokio::test]

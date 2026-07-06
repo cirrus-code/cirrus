@@ -518,9 +518,10 @@ async fn wait_for_deploy_returns_terminal_result_when_details_fetch_fails() {
 
     assert_eq!(result.status, Some(DeployStatus::Succeeded));
     assert!(result.details.is_none());
-    // One terminal poll plus the failed details fetch (500 on POST is
-    // not retried).
-    assert_eq!(counter.load(Ordering::SeqCst), 2);
+    // One terminal poll plus the failed details fetch. checkDeployStatus
+    // is a read-only (idempotent) operation, so the 500 on the details
+    // fetch is retried per the default policy: 1 + (1 + 3 retries) = 5.
+    assert_eq!(counter.load(Ordering::SeqCst), 5);
 }
 
 #[tokio::test]

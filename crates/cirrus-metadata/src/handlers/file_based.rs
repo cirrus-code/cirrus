@@ -80,6 +80,10 @@ struct CheckDeployStatusResponseWire {
 
 impl SoapOperation for CheckDeployStatusOp {
     const NAME: &'static str = "checkDeployStatus";
+    // Read-only status poll: safe to replay. Keeping this retryable
+    // matters — wait_for_deploy polls through it, and a transient 503
+    // mid-wait would otherwise abort a long-running deploy watch.
+    const IDEMPOTENT: bool = true;
     type Response = CheckDeployStatusResponseWire;
 
     fn render_body(&self) -> MetadataResult<String> {
@@ -193,6 +197,8 @@ struct CheckRetrieveStatusResponseWire {
 
 impl SoapOperation for CheckRetrieveStatusOp {
     const NAME: &'static str = "checkRetrieveStatus";
+    // Read-only status poll: safe to replay (see CheckDeployStatusOp).
+    const IDEMPOTENT: bool = true;
     type Response = CheckRetrieveStatusResponseWire;
 
     fn render_body(&self) -> MetadataResult<String> {

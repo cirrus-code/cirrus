@@ -1234,8 +1234,9 @@ mod tests {
 
         #[tokio::test]
         async fn does_not_retry_500_on_post() {
-            // POST is non-idempotent — even on 5xx (other than 429/503)
-            // we must not retry, to avoid duplicate-record creation.
+            // POST is non-idempotent — on any 5xx (429 is the only
+            // any-method retry) we must not replay, to avoid
+            // duplicate-record creation.
             let server = MockServer::start().await;
 
             Mock::given(method("POST"))
@@ -1254,6 +1255,29 @@ mod tests {
                 .await
                 .unwrap_err();
             assert!(matches!(err, CirrusError::Api { status: 500, .. }));
+        }
+
+        #[tokio::test]
+        async fn does_not_retry_503_on_post() {
+            // 503 gets no special exemption from the non-idempotent
+            // rule: an intermediary can emit it after the origin
+            // processed the request, so replaying a POST risks a
+            // duplicate insert.
+            let server = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .and(path("/services/data/v66.0/sobjects/Account"))
+                .respond_with(ResponseTemplate::new(503))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let sf = fixture_with_policy(server.uri(), fast_retry_policy());
+            let err = sf
+                .post::<Value, _>("sobjects/Account", &json!({"Name": "Acme"}))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, CirrusError::Api { status: 503, .. }));
         }
 
         #[tokio::test]

@@ -45,6 +45,8 @@ struct ListMetadataResponseWire {
 
 impl SoapOperation for ListMetadataOp<'_> {
     const NAME: &'static str = "listMetadata";
+    // Read-only: safe to replay on ambiguous transport failures.
+    const IDEMPOTENT: bool = true;
     type Response = ListMetadataResponseWire;
 
     fn render_body(&self) -> MetadataResult<String> {
@@ -82,6 +84,8 @@ struct DescribeMetadataResponseWire {
 
 impl SoapOperation for DescribeMetadataOp<'_> {
     const NAME: &'static str = "describeMetadata";
+    // Read-only: safe to replay on ambiguous transport failures.
+    const IDEMPOTENT: bool = true;
     type Response = DescribeMetadataResponseWire;
 
     fn render_body(&self) -> MetadataResult<String> {
@@ -103,6 +107,8 @@ struct DescribeValueTypeResponseWire {
 
 impl SoapOperation for DescribeValueTypeOp {
     const NAME: &'static str = "describeValueType";
+    // Read-only: safe to replay on ambiguous transport failures.
+    const IDEMPOTENT: bool = true;
     type Response = DescribeValueTypeResponseWire;
 
     fn render_body(&self) -> MetadataResult<String> {

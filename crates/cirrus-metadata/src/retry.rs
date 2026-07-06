@@ -1,14 +1,24 @@
 //! Retry policy and backoff machinery for transient HTTP failures.
 //!
-//! Policy: retry only what's clearly safe — 429 / 503 (server-asserted
-//! "didn't happen, try again"), and idempotent-method 5xx — honor any
-//! `Retry-After` hint, and add jitter to avoid thundering herds. The
-//! Metadata API SOAP endpoint is always POST (non-idempotent), so the
-//! [`retry_idempotent_5xx`] flag only governs the open-ended escape
-//! hatch; the SOAP path retries solely on 429 / 503 / connect-phase
-//! failures.
+//! Policy: retry only what's clearly safe — 429 (rate limited, the
+//! request was refused without being processed) for every operation,
+//! and 5xx / mid-request network failures only for operations declared
+//! idempotent — honor any `Retry-After` hint, and add jitter to avoid
+//! thundering herds.
 //!
-//! [`retry_idempotent_5xx`]: RetryPolicy::retry_idempotent_5xx
+//! The Metadata API SOAP endpoint is always POST, so the HTTP method
+//! carries no idempotency signal; instead each [`SoapOperation`]
+//! declares whether it is safe to replay via
+//! [`SoapOperation::IDEMPOTENT`]. Read-only calls (`checkDeployStatus`,
+//! `listMetadata`, …) are; mutating calls (`deploy`, `createMetadata`,
+//! …) are not — a 503 emitted by an intermediary after the origin
+//! processed a `create` would otherwise be replayed into a duplicate.
+//! Retries apply only to the SOAP dispatch path; the open-ended
+//! [`request_builder`] escape hatch is hands-off.
+//!
+//! [`SoapOperation`]: crate::transport::SoapOperation
+//! [`SoapOperation::IDEMPOTENT`]: crate::transport::SoapOperation::IDEMPOTENT
+//! [`request_builder`]: crate::MetadataClient::request_builder
 
 use crate::error::MetadataError;
 use std::time::Duration;
@@ -28,11 +38,12 @@ pub struct RetryPolicy {
     /// rather than using the deterministic exponential value. Default
     /// `true`.
     pub jitter: bool,
-    /// When `true`, retry idempotent methods (GET, HEAD, DELETE, PUT)
-    /// on transient 5xx errors (500, 502, 504). When `false`, only
-    /// retry on 429 / 503. Default `true`. The Metadata API SOAP
-    /// surface is POST-only so this flag is dormant for SOAP calls,
-    /// but it applies to the open-ended escape hatch.
+    /// When `true`, retry idempotent operations on transient 5xx
+    /// errors (500, 502, 504). When `false`, only retry on 429 (any
+    /// operation) and 503 (idempotent operations). Default `true`.
+    ///
+    /// Non-idempotent operations (`deploy`, the CRUD calls, …) are
+    /// *never* retried on 5xx, regardless of this flag.
     pub retry_idempotent_5xx: bool,
 }
 
@@ -62,9 +73,13 @@ impl RetryPolicy {
 /// Decision point: should we retry this HTTP response?
 ///
 /// `attempt` is the zero-indexed *previous* attempt count.
+/// `idempotent` is the operation's [`IDEMPOTENT`] declaration — the
+/// SOAP surface is POST-only, so the HTTP method can't stand in for it.
+///
+/// [`IDEMPOTENT`]: crate::transport::SoapOperation::IDEMPOTENT
 pub(crate) fn should_retry_status(
     policy: &RetryPolicy,
-    method: &reqwest::Method,
+    idempotent: bool,
     status: u16,
     attempt: u32,
 ) -> bool {
@@ -72,8 +87,16 @@ pub(crate) fn should_retry_status(
         return false;
     }
     match status {
-        429 | 503 => true,
-        500 | 502 | 504 if policy.retry_idempotent_5xx => is_idempotent(method),
+        // Rate limited: the request was refused, not processed, so a
+        // replay is safe for any operation.
+        429 => true,
+        // 503 is the canonical "temporarily unavailable" status, but
+        // an intermediary can emit it after the origin processed the
+        // request — so it only replays idempotent operations. Unlike
+        // 500/502/504 it stays retryable even when
+        // `retry_idempotent_5xx` is off.
+        503 => idempotent,
+        500 | 502 | 504 if policy.retry_idempotent_5xx => idempotent,
         _ => false,
     }
 }
@@ -81,7 +104,7 @@ pub(crate) fn should_retry_status(
 /// Decision point: should we retry this network-level failure?
 pub(crate) fn should_retry_network(
     policy: &RetryPolicy,
-    method: &reqwest::Method,
+    idempotent: bool,
     error: &MetadataError,
     attempt: u32,
 ) -> bool {
@@ -92,25 +115,15 @@ pub(crate) fn should_retry_network(
         return false;
     };
     // Connect-phase errors mean the request never reached the server,
-    // so retrying is safe even for non-idempotent methods (which is
-    // every SOAP call — the API is POST-only). This covers DNS
-    // failures, TCP RSTs, TLS handshake failures, and connect timeouts.
+    // so retrying is safe even for non-idempotent operations. This
+    // covers DNS failures, TCP RSTs, TLS handshake failures, and
+    // connect timeouts. Mid-request failures are ambiguous — the
+    // server may have processed the request — so they replay only
+    // idempotent operations.
     if http.is_connect() {
         return true;
     }
-    is_idempotent(method)
-}
-
-fn is_idempotent(method: &reqwest::Method) -> bool {
-    matches!(
-        *method,
-        reqwest::Method::GET
-            | reqwest::Method::HEAD
-            | reqwest::Method::DELETE
-            | reqwest::Method::PUT
-            | reqwest::Method::OPTIONS
-            | reqwest::Method::TRACE
-    )
+    idempotent
 }
 
 /// Parse a `Retry-After` header value as RFC 7231 §7.1.3 delta-seconds.
@@ -184,33 +197,45 @@ mod tests {
     #[test]
     fn none_policy_disables_retry() {
         let p = RetryPolicy::none();
-        assert!(!should_retry_status(&p, &reqwest::Method::POST, 503, 0));
+        assert!(!should_retry_status(&p, true, 503, 0));
     }
 
     #[test]
-    fn retries_429_and_503_for_post_metadata_calls() {
+    fn retries_429_for_any_operation() {
         let p = RetryPolicy::default();
-        // Metadata API SOAP endpoint is POST. We retry 429/503 anyway
-        // because the server is asserting "didn't happen, retry."
-        assert!(should_retry_status(&p, &reqwest::Method::POST, 429, 0));
-        assert!(should_retry_status(&p, &reqwest::Method::POST, 503, 0));
+        // Rate limited = refused before processing; safe to replay
+        // even for mutating calls.
+        assert!(should_retry_status(&p, false, 429, 0));
+        assert!(should_retry_status(&p, true, 429, 0));
     }
 
     #[test]
-    fn does_not_retry_post_on_other_5xx() {
+    fn retries_5xx_only_for_idempotent_operations() {
         let p = RetryPolicy::default();
-        // 500/502/504 on POST is ambiguous — the request may have
-        // partially landed. Don't retry.
-        assert!(!should_retry_status(&p, &reqwest::Method::POST, 500, 0));
-        assert!(!should_retry_status(&p, &reqwest::Method::POST, 502, 0));
-        assert!(!should_retry_status(&p, &reqwest::Method::POST, 504, 0));
+        for status in [500, 502, 503, 504] {
+            assert!(should_retry_status(&p, true, status, 0));
+            // A mutating call's outcome is ambiguous — the request
+            // may have landed. Don't replay, 503 included.
+            assert!(!should_retry_status(&p, false, status, 0));
+        }
+    }
+
+    #[test]
+    fn retry_5xx_disabled_keeps_idempotent_503() {
+        let p = RetryPolicy {
+            retry_idempotent_5xx: false,
+            ..RetryPolicy::default()
+        };
+        assert!(should_retry_status(&p, true, 503, 0));
+        assert!(!should_retry_status(&p, true, 500, 0));
+        assert!(!should_retry_status(&p, true, 502, 0));
     }
 
     #[test]
     fn stops_at_max_retries() {
         let p = RetryPolicy::default();
-        assert!(should_retry_status(&p, &reqwest::Method::POST, 429, 2));
-        assert!(!should_retry_status(&p, &reqwest::Method::POST, 429, 3));
+        assert!(should_retry_status(&p, false, 429, 2));
+        assert!(!should_retry_status(&p, false, 429, 3));
     }
 
     #[test]

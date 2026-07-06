@@ -55,6 +55,14 @@ pub trait SoapOperation {
     /// `<NAMEResponse>` on the way back.
     const NAME: &'static str;
 
+    /// Whether the operation is safe to replay when the outcome of a
+    /// sent request is unknown (a 5xx from an intermediary, a
+    /// mid-request network failure). Every SOAP call is an HTTP POST,
+    /// so this declaration is the only idempotency signal the retry
+    /// policy has. Defaults to `false` (never replay); read-only
+    /// operations (`checkDeployStatus`, `listMetadata`, …) opt in.
+    const IDEMPOTENT: bool = false;
+
     /// The typed response shape. Deserialized via `quick-xml`'s serde
     /// implementation from the bytes of the full
     /// `<{NAME}Response>...</{NAME}Response>` element.
@@ -76,7 +84,8 @@ pub(crate) async fn soap_call<O: SoapOperation>(
 ) -> MetadataResult<O::Response> {
     let response_local = format!("{}Response", O::NAME);
     let body_xml = op.render_body()?;
-    let inner = call_with_auth_retry(client, O::NAME, &body_xml, &response_local).await?;
+    let inner =
+        call_with_auth_retry(client, O::NAME, O::IDEMPOTENT, &body_xml, &response_local).await?;
     let parsed: O::Response = quick_xml::de::from_reader(inner.as_slice())?;
     Ok(parsed)
 }
@@ -87,6 +96,7 @@ pub(crate) async fn soap_call<O: SoapOperation>(
 async fn call_with_auth_retry(
     client: &MetadataClient,
     op_name: &str,
+    idempotent: bool,
     body_xml: &str,
     response_local: &str,
 ) -> MetadataResult<Vec<u8>> {
@@ -109,7 +119,7 @@ async fn call_with_auth_retry(
         let envelope = envelope::build_envelope(&token_str, op_name, body_xml);
         // Bytes is Arc-backed — clones on retry are cheap.
         let body = Bytes::from(envelope.into_bytes());
-        let result = send_with_retries(client, body, response_local).await;
+        let result = send_with_retries(client, idempotent, body, response_local).await;
 
         if !auth_retried
             && let Err(MetadataError::Soap { fault, .. }) = &result
@@ -146,11 +156,11 @@ async fn call_with_auth_retry(
 /// `<{NAME}Response>...</{NAME}Response>` element on success.
 async fn send_with_retries(
     client: &MetadataClient,
+    idempotent: bool,
     envelope_bytes: Bytes,
     response_local: &str,
 ) -> MetadataResult<Vec<u8>> {
     let url = client.endpoint_url();
-    let method = reqwest::Method::POST;
     let mut attempt: u32 = 0;
     loop {
         let request = client
@@ -169,7 +179,7 @@ async fn send_with_retries(
                 let status = response.status().as_u16();
                 let headers = response.headers().clone();
 
-                if retry::should_retry_status(&client.retry_policy, &method, status, attempt) {
+                if retry::should_retry_status(&client.retry_policy, idempotent, status, attempt) {
                     // Drain the body so the connection returns clean.
                     let _ = response.bytes().await;
                     let retry_after = retry::parse_retry_after(&headers);
@@ -207,7 +217,7 @@ async fn send_with_retries(
             }
             Err(e) => {
                 let err: MetadataError = e.into();
-                if retry::should_retry_network(&client.retry_policy, &method, &err, attempt) {
+                if retry::should_retry_network(&client.retry_policy, idempotent, &err, attempt) {
                     let delay = retry::compute_delay(&client.retry_policy, attempt, None);
                     tokio::time::sleep(delay).await;
                     attempt += 1;

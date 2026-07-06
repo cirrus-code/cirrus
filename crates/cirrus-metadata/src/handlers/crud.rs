@@ -219,6 +219,8 @@ where
     S: AsRef<str>,
 {
     const NAME: &'static str = "readMetadata";
+    // Read-only: safe to replay on ambiguous transport failures.
+    const IDEMPOTENT: bool = true;
     type Response = ReadMetadataResponseWire<T>;
 
     fn render_body(&self) -> MetadataResult<String> {

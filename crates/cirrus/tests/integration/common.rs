@@ -80,8 +80,18 @@ const SAFE_PARTITIONS: &[&str] = &[
 /// Returns true if the URL matches a known-safe sandbox/dev/scratch
 /// pattern. Used to gate write-capable integration tests away from
 /// production My Domains.
+///
+/// The check is anchored to the parsed URL's host — a plain substring
+/// match over the whole URL would let a production instance through if
+/// a safe-partition string appeared in the path or query.
 pub fn is_safe_test_url(url: &str) -> bool {
-    SAFE_PARTITIONS.iter().any(|p| url.contains(p))
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    SAFE_PARTITIONS.iter().any(|p| host.ends_with(p))
 }
 
 /// Loads a `.env` from the project root once per test process. Idempotent.
@@ -219,5 +229,21 @@ mod tests {
     fn url_classifier_refuses_unrelated_hosts() {
         assert!(!is_safe_test_url("https://example.com"));
         assert!(!is_safe_test_url("https://localhost"));
+    }
+
+    #[test]
+    fn url_classifier_refuses_safe_partition_outside_host() {
+        // The safe-partition string appearing in the path, query, or a
+        // deceptive subdomain prefix must not satisfy the guard — only
+        // the actual host counts.
+        assert!(!is_safe_test_url(
+            "https://acme.my.salesforce.com/?x=.sandbox.my.salesforce.com"
+        ));
+        assert!(!is_safe_test_url(
+            "https://acme.my.salesforce.com/.sandbox.my.salesforce.com"
+        ));
+        assert!(!is_safe_test_url(
+            "https://acme.my.salesforce.com.sandbox.my.salesforce.evil.example"
+        ));
     }
 }

@@ -45,8 +45,17 @@ const SAFE_PARTITIONS: &[&str] = &[
     ".trailblaze.my.salesforce.com",
 ];
 
+/// Anchored to the parsed host — substring matching over the whole URL
+/// would let a production instance through if a safe-partition string
+/// appeared in the path or query.
 pub fn is_safe_test_url(url: &str) -> bool {
-    SAFE_PARTITIONS.iter().any(|p| url.contains(p))
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    SAFE_PARTITIONS.iter().any(|p| host.ends_with(p))
 }
 
 fn load_dotenv() {

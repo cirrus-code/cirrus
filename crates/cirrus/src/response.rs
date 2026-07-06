@@ -829,17 +829,36 @@ pub(crate) fn parse_response_bytes<R: DeserializeOwned>(
     Err(parse_error_response(status, bytes))
 }
 
+/// Ceiling on how much of an unparseable error body is preserved in
+/// [`CirrusError::Api::raw`]. Bodies that don't match the Salesforce
+/// error shape come from proxies and gateways, which can echo request
+/// data — capping what we retain bounds what can end up in the
+/// caller's logs via `Display`/`Debug`, and keeps a pathological body
+/// from ballooning the error value. 2 KiB comfortably fits real proxy
+/// error pages' useful prefix.
+const RAW_ERROR_BODY_CAP: usize = 2048;
+
 /// Parses a non-2xx response body into a [`CirrusError::Api`].
 ///
 /// Tries the standard Salesforce error-array shape first; falls back to
-/// preserving the raw body for debugging when the array doesn't parse.
-/// Used both by [`parse_response_bytes`] (JSON success path) and the
-/// raw-body transport path that bypasses JSON deserialization on success
+/// preserving the raw body (capped at [`RAW_ERROR_BODY_CAP`] bytes) for
+/// debugging when the array doesn't parse. Used both by
+/// [`parse_response_bytes`] (JSON success path) and the raw-body
+/// transport path that bypasses JSON deserialization on success
 /// (Bulk API CSV downloads).
 pub(crate) fn parse_error_response(status: u16, bytes: &[u8]) -> CirrusError {
     let errors = serde_json::from_slice::<Vec<SalesforceError>>(bytes).unwrap_or_default();
     let raw = if errors.is_empty() {
-        Some(String::from_utf8_lossy(bytes).into_owned())
+        let mut body = String::from_utf8_lossy(bytes).into_owned();
+        if body.len() > RAW_ERROR_BODY_CAP {
+            let mut end = RAW_ERROR_BODY_CAP;
+            while !body.is_char_boundary(end) {
+                end -= 1;
+            }
+            body.truncate(end);
+            body.push_str("… <truncated>");
+        }
+        Some(body)
     } else {
         None
     };
@@ -856,6 +875,27 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use serde_json::json;
+
+    #[test]
+    fn unparseable_error_body_is_capped() {
+        let body = "x".repeat(RAW_ERROR_BODY_CAP * 3);
+        let err = parse_error_response(502, body.as_bytes());
+        match err {
+            CirrusError::Api { raw: Some(raw), .. } => {
+                assert!(
+                    raw.ends_with("… <truncated>"),
+                    "missing marker: …{}",
+                    &raw[raw.len() - 20..]
+                );
+                assert!(
+                    raw.len() < RAW_ERROR_BODY_CAP + 32,
+                    "raw not capped: {} bytes",
+                    raw.len()
+                );
+            }
+            other => panic!("expected Api with raw body, got {other:?}"),
+        }
+    }
 
     #[test]
     fn parses_success_into_value() {

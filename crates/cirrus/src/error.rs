@@ -60,8 +60,11 @@ pub enum CirrusError {
         /// Parsed Salesforce error entries. Empty if the body was not parseable
         /// as the canonical error array.
         errors: Vec<SalesforceError>,
-        /// Raw response body. Populated when `errors` is empty so callers can
-        /// see what came back.
+        /// Raw response body, capped at 2 KiB (longer bodies are
+        /// truncated with a marker — non-Salesforce shapes come from
+        /// proxies/gateways, and retaining them unboundedly would let
+        /// echoed request data flow into logs). Populated when `errors`
+        /// is empty so callers can see what came back.
         raw: Option<String>,
     },
 

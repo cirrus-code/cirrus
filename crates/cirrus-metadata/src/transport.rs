@@ -210,7 +210,7 @@ async fn send_with_retries(
                         }
                         return Err(MetadataError::Http4xx5xx {
                             status,
-                            raw: String::from_utf8_lossy(&bytes).into_owned(),
+                            raw: crate::error::cap_raw_body(&bytes),
                         });
                     }
                 }

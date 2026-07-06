@@ -86,7 +86,10 @@ pub enum MetadataError {
     Http4xx5xx {
         /// HTTP status code returned.
         status: u16,
-        /// Raw response body.
+        /// Raw response body, capped at 2 KiB (longer bodies are
+        /// truncated with a marker — non-SOAP shapes come from
+        /// proxies/gateways, and retaining them unboundedly would let
+        /// echoed request data flow into logs).
         raw: String,
     },
 
@@ -122,6 +125,27 @@ pub enum MetadataError {
     PollTimeout(String),
 }
 
+/// Ceiling on how much of a non-SOAP error body is preserved in
+/// [`MetadataError::Http4xx5xx`]. Such bodies come from proxies and
+/// gateways, which can echo request data — capping what we retain
+/// bounds what can end up in the caller's logs via `Display`/`Debug`.
+const RAW_ERROR_BODY_CAP: usize = 2048;
+
+/// Lossily decode an error body, truncating at [`RAW_ERROR_BODY_CAP`]
+/// with a marker.
+pub(crate) fn cap_raw_body(bytes: &[u8]) -> String {
+    let mut body = String::from_utf8_lossy(bytes).into_owned();
+    if body.len() > RAW_ERROR_BODY_CAP {
+        let mut end = RAW_ERROR_BODY_CAP;
+        while !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        body.truncate(end);
+        body.push_str("… <truncated>");
+    }
+    body
+}
+
 impl From<quick_xml::Error> for MetadataError {
     fn from(e: quick_xml::Error) -> Self {
         MetadataError::Xml(e.to_string())
@@ -147,6 +171,16 @@ impl From<std::io::Error> for MetadataError {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cap_raw_body_truncates_oversized_bodies() {
+        let body = "x".repeat(RAW_ERROR_BODY_CAP * 3);
+        let capped = cap_raw_body(body.as_bytes());
+        assert!(capped.ends_with("… <truncated>"));
+        assert!(capped.len() < RAW_ERROR_BODY_CAP + 32);
+        // Small bodies pass through untouched.
+        assert_eq!(cap_raw_body(b"tiny"), "tiny");
+    }
 
     #[test]
     fn fault_code_strips_namespace_prefix() {

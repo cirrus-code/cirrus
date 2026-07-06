@@ -214,6 +214,16 @@ struct TypeEntry {
     members: Vec<String>,
 }
 
+/// Salesforce rejects a `<types>` block that mixes the `*` wildcard
+/// with explicit members, and the wildcard subsumes them anyway — so
+/// whenever a `*` is present, reduce the list to that single entry.
+fn collapse_wildcard(members: &mut Vec<String>) {
+    if members.iter().any(|m| m == "*") {
+        members.clear();
+        members.push("*".to_string());
+    }
+}
+
 impl PackageManifest {
     /// Create a new empty manifest at the given API version.
     ///
@@ -238,7 +248,12 @@ impl PackageManifest {
     }
 
     /// Add components of one metadata type. If the type has already
-    /// been added, the new members are appended to its existing list.
+    /// been added, the new members are appended to its existing list —
+    /// unless the type carries the `*` wildcard (from a prior
+    /// [`Self::all`] or an explicit `"*"` member), in which case the
+    /// entry stays a lone wildcard: `*` already subsumes every member,
+    /// and Salesforce rejects a `<types>` block that mixes `*` with
+    /// explicit names.
     ///
     /// Each member name is the metadata component's `fullName` —
     /// `"Foo"` for `MetadataType::APEX_CLASS`, `"Account__c"` for
@@ -258,10 +273,13 @@ impl PackageManifest {
             .find(|e| e.type_name == type_name.as_str())
         {
             entry.members.extend(new_members);
+            collapse_wildcard(&mut entry.members);
         } else {
+            let mut members: Vec<String> = new_members.collect();
+            collapse_wildcard(&mut members);
             self.entries.push(TypeEntry {
                 type_name: type_name.as_str().to_string(),
-                members: new_members.collect(),
+                members,
             });
         }
         self
@@ -640,6 +658,41 @@ mod property_tests {
             }
             let actual: Vec<String> = pkg.entries().map(|(t, _)| t.to_string()).collect();
             prop_assert_eq!(actual, expected);
+        }
+
+        /// The mirror order of `all_overrides_add_and_is_idempotent`:
+        /// once a type is wildcarded, later `add(t, _)` calls must not
+        /// splice explicit members next to the `"*"` — Salesforce
+        /// rejects the mixed form.
+        #[test]
+        fn add_after_all_keeps_lone_wildcard(
+            ty in name(),
+            extra_members in proptest::collection::vec(name(), 0..4),
+        ) {
+            let pkg = PackageManifest::new("66.0")
+                .all(MetadataType::new(ty.clone()))
+                .add(MetadataType::new(ty.clone()), extra_members.clone());
+            let entries: Vec<_> = pkg.entries().collect();
+            prop_assert_eq!(entries.len(), 1, "expected exactly one entry");
+            prop_assert_eq!(entries[0].0, ty.as_str());
+            prop_assert_eq!(entries[0].1, &["*".to_string()]);
+        }
+
+        /// An explicit `"*"` passed through `add` behaves like `all`:
+        /// the entry collapses to the lone wildcard instead of mixing
+        /// it with explicit members.
+        #[test]
+        fn add_with_explicit_star_collapses(
+            ty in name(),
+            extra_members in proptest::collection::vec(name(), 0..4),
+        ) {
+            let mut members = extra_members.clone();
+            members.push("*".to_string());
+            let pkg = PackageManifest::new("66.0")
+                .add(MetadataType::new(ty.clone()), members);
+            let entries: Vec<_> = pkg.entries().collect();
+            prop_assert_eq!(entries.len(), 1, "expected exactly one entry");
+            prop_assert_eq!(entries[0].1, &["*".to_string()]);
         }
 
         /// `all(t)` collapses any prior `add(t, _)` entries to the

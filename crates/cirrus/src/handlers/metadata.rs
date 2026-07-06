@@ -549,6 +549,12 @@ pub enum DeployStatus {
     Failed,
     Canceling,
     Canceled,
+    /// A status literal this SDK version doesn't know. Salesforce has
+    /// extended the set before (`FinalizingDeploy` arrived in API
+    /// 65.0), and a new literal must not turn every status poll into
+    /// a deserialization error.
+    #[serde(other)]
+    Unknown,
 }
 
 impl DeployStatus {
@@ -556,6 +562,10 @@ impl DeployStatus {
     /// success or failure. Callers polling
     /// [`MetadataHandler::check_deploy_status`] can stop once this
     /// returns `true`.
+    ///
+    /// [`Unknown`](Self::Unknown) reports `false` — an unrecognized
+    /// status can't be assumed finished, so pollers should keep going
+    /// (bounded by their own timeout) rather than stop early.
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
@@ -582,6 +592,16 @@ mod tests {
     fn fixture(uri: String) -> Cirrus {
         let auth = Arc::new(StaticTokenAuth::new("tok", uri));
         Cirrus::builder().auth(auth).build().unwrap()
+    }
+
+    #[test]
+    fn unknown_deploy_status_deserializes_to_unknown_not_error() {
+        // Salesforce extends the status set across API versions
+        // (FinalizingDeploy arrived in 65.0); an unrecognized literal
+        // must degrade to Unknown, not fail every status poll.
+        let status: DeployStatus = serde_json::from_value(json!("BrandNewPhase")).unwrap();
+        assert_eq!(status, DeployStatus::Unknown);
+        assert!(!status.is_terminal());
     }
 
     /// Wire shape per `meta_rest_deploy` example response body.

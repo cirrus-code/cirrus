@@ -80,6 +80,10 @@ pub enum AsyncRequestState {
     InProgress,
     Completed,
     Error,
+    /// A state literal this SDK version doesn't know — kept from
+    /// turning the whole response into a deserialization error.
+    #[serde(other)]
+    Unknown,
 }
 
 // -- Deploy ------------------------------------------------------------------
@@ -239,10 +243,22 @@ pub enum DeployStatus {
     /// API 65.0+.
     FinalizingDeploy,
     FinalizingDeployFailed,
+    /// A status literal this SDK version doesn't know. Salesforce has
+    /// extended the set before (`FinalizingDeploy` arrived in API
+    /// 65.0), and a new literal must not turn every status poll into
+    /// a deserialization error. Terminal-state detection is unaffected:
+    /// [`wait_for_deploy`] keys off the `done` flag, not the status.
+    ///
+    /// [`wait_for_deploy`]: crate::MetadataClient::wait_for_deploy
+    #[serde(other)]
+    Unknown,
 }
 
 impl DeployStatus {
     /// True when the deploy job is finished, regardless of success.
+    ///
+    /// [`Unknown`](Self::Unknown) reports `false` — an unrecognized
+    /// status can't be assumed finished.
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
@@ -498,10 +514,21 @@ pub enum RetrieveStatus {
     InProgress,
     Succeeded,
     Failed,
+    /// A status literal this SDK version doesn't know — kept from
+    /// turning the whole response into a deserialization error.
+    /// Terminal-state detection is unaffected: [`wait_for_retrieve`]
+    /// keys off the `done` flag, not the status.
+    ///
+    /// [`wait_for_retrieve`]: crate::MetadataClient::wait_for_retrieve
+    #[serde(other)]
+    Unknown,
 }
 
 impl RetrieveStatus {
     /// True when the retrieve job is finished, regardless of success.
+    ///
+    /// [`Unknown`](Self::Unknown) reports `false` — an unrecognized
+    /// status can't be assumed finished.
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Succeeded | Self::Failed)
     }
@@ -548,6 +575,12 @@ pub enum ManageableState {
     InstalledEditable,
     Released,
     Unmanaged,
+    /// A state literal this SDK version doesn't know. This enum rides
+    /// inside every [`FileProperties`], so without a fallback a single
+    /// new literal would fail deserialization of an entire
+    /// `listMetadata` / retrieve response.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Error / warning surfaced in a [`RetrieveResult`].
@@ -841,6 +874,35 @@ mod tests {
         assert!(RetrieveStatus::Failed.is_terminal());
         assert!(!RetrieveStatus::Pending.is_terminal());
         assert!(!RetrieveStatus::InProgress.is_terminal());
+    }
+
+    #[test]
+    fn unknown_status_literals_deserialize_to_unknown_not_error() {
+        // Salesforce extends these enums across API versions
+        // (FinalizingDeploy arrived in 65.0); an unrecognized literal
+        // must degrade to Unknown, not fail the whole response.
+        #[derive(Deserialize)]
+        struct Wire {
+            deploy: DeployStatus,
+            retrieve: RetrieveStatus,
+            state: AsyncRequestState,
+            manageable: ManageableState,
+        }
+        let parsed: Wire = quick_xml::de::from_str(
+            "<Wire>\
+               <deploy>BrandNewPhase</deploy>\
+               <retrieve>BrandNewPhase</retrieve>\
+               <state>BrandNewPhase</state>\
+               <manageable>brandNewState</manageable>\
+             </Wire>",
+        )
+        .unwrap();
+        assert_eq!(parsed.deploy, DeployStatus::Unknown);
+        assert!(!parsed.deploy.is_terminal());
+        assert_eq!(parsed.retrieve, RetrieveStatus::Unknown);
+        assert!(!parsed.retrieve.is_terminal());
+        assert_eq!(parsed.state, AsyncRequestState::Unknown);
+        assert_eq!(parsed.manageable, ManageableState::Unknown);
     }
 
     #[test]

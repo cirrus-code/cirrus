@@ -66,6 +66,15 @@ mod transport;
 /// `cirrus::auth::*` since both crates re-export the same source.
 pub use cirrus_auth as auth;
 
+/// Re-export of [`reqwest`].
+///
+/// Several public APIs accept or return `reqwest` types
+/// ([`MetadataClient::request_builder`],
+/// [`MetadataClientBuilder::http_client`]). Using this re-export
+/// instead of a separate `reqwest` dependency keeps the caller's
+/// `reqwest` version aligned with the SDK's.
+pub use reqwest;
+
 pub use auth::{AuthError, AuthSession, SharedAuth};
 pub use error::{MetadataError, MetadataResult, SoapFault};
 pub use handlers::file_based::WaitConfig;

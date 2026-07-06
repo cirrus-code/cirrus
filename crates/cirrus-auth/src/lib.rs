@@ -51,6 +51,14 @@ mod token_endpoint;
 pub mod token_exchange;
 pub mod web_server;
 
+/// Re-export of [`reqwest`].
+///
+/// Every flow builder's `http_client` setter accepts a
+/// `reqwest::Client`; using this re-export instead of a separate
+/// `reqwest` dependency keeps the caller's `reqwest` version aligned
+/// with the SDK's.
+pub use reqwest;
+
 pub use client_credentials::{ClientCredentialsAuth, ClientCredentialsAuthBuilder};
 pub use error::{AuthError, AuthResult};
 pub use jwt::{JwtAuth, JwtAuthBuilder};

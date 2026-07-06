@@ -58,6 +58,15 @@ pub mod retry;
 /// transparently.
 pub use cirrus_auth as auth;
 
+/// Re-export of [`reqwest`].
+///
+/// Several public APIs accept or return `reqwest` types
+/// ([`Cirrus::request_builder`], [`Cirrus::execute`],
+/// [`Cirrus::http_client`], [`CirrusBuilder::http_client`]). Using this
+/// re-export instead of a separate `reqwest` dependency keeps the
+/// caller's `reqwest` version aligned with the SDK's.
+pub use reqwest;
+
 pub use auth::{AuthError, AuthSession, SharedAuth};
 pub use bytes::Bytes;
 pub use error::{CirrusError, CirrusResult, SalesforceError};

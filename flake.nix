@@ -46,7 +46,9 @@
         packages = {
           ${projectName} = pkgs.rustPlatform.buildRustPackage {
             pname = projectName;
-            version = let file = builtins.fromTOML (builtins.readFile ./Cargo.toml); in file.package.version;
+            # The root manifest is a virtual workspace manifest (no [package]
+            # table) — take the version from the primary crate instead.
+            version = let file = builtins.fromTOML (builtins.readFile ./crates/cirrus/Cargo.toml); in file.package.version;
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
           };

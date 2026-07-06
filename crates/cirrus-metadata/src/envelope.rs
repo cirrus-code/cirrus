@@ -32,7 +32,8 @@
 use crate::error::{MetadataError, MetadataResult, SoapFault};
 use quick_xml::Reader;
 use quick_xml::Writer;
-use quick_xml::events::{BytesText, Event};
+use quick_xml::escape::unescape;
+use quick_xml::events::{BytesRef, BytesText, Event};
 
 /// SOAP 1.1 envelope namespace.
 const SOAP_NS: &str = "http://schemas.xmlsoap.org/soap/envelope/";
@@ -215,6 +216,12 @@ fn collect_element(
             Event::Text(e) => {
                 writer.write_event(Event::Text(e))?;
             }
+            // Entity/character references (`&amp;`, `&#x30;`, …) arrive
+            // as their own events, not folded into `Text` — dropping
+            // one would silently corrupt the re-emitted element.
+            Event::GeneralRef(e) => {
+                writer.write_event(Event::GeneralRef(e))?;
+            }
             Event::CData(e) => {
                 writer.write_event(Event::CData(e))?;
             }
@@ -298,6 +305,20 @@ fn parse_fault(reader: &mut Reader<&[u8]>) -> MetadataResult<SoapFault> {
                     }
                 }
             }
+            // Entity/character references inside faultcode/faultstring
+            // arrive as their own events; resolve and append them like
+            // the `Text` they interrupt.
+            Event::GeneralRef(r) => {
+                if depth == tracked_child_depth
+                    && let Some(f) = field
+                {
+                    let s = resolve_ref(&r)?;
+                    match f {
+                        Field::Code => faultcode.push_str(&s),
+                        Field::String_ => faultstring.push_str(&s),
+                    }
+                }
+            }
             Event::End(_) => {
                 if depth == tracked_child_depth {
                     field = None;
@@ -322,7 +343,23 @@ fn parse_fault(reader: &mut Reader<&[u8]>) -> MetadataResult<SoapFault> {
 }
 
 fn unescape_text(t: &BytesText<'_>) -> MetadataResult<String> {
-    Ok(t.unescape().map_err(MetadataError::from)?.into_owned())
+    // The reader yields Text events still entity-escaped: `decode`
+    // only handles the byte encoding, `unescape` resolves entities.
+    let decoded = t.decode().map_err(quick_xml::Error::from)?;
+    Ok(unescape(&decoded)
+        .map_err(quick_xml::Error::from)?
+        .into_owned())
+}
+
+/// Resolve a `GeneralRef` event (`&lt;`, `&#x30;`, …) to its textual
+/// value. The event carries only the name between `&` and `;`, so
+/// re-wrap it and let `unescape` handle both predefined entities and
+/// numeric character references.
+fn resolve_ref(r: &BytesRef<'_>) -> MetadataResult<String> {
+    let name = r.decode().map_err(quick_xml::Error::from)?;
+    Ok(unescape(&format!("&{name};"))
+        .map_err(quick_xml::Error::from)?
+        .into_owned())
 }
 
 /// Minimal XML escape — only the five mandatory entities. Used for the
@@ -580,7 +617,10 @@ mod property_tests {
             loop {
                 match reader.read_event() {
                     Ok(quick_xml::events::Event::Text(t)) => {
-                        got.push_str(&t.unescape().unwrap());
+                        got.push_str(&unescape(&t.decode().unwrap()).unwrap());
+                    }
+                    Ok(quick_xml::events::Event::GeneralRef(r)) => {
+                        got.push_str(&resolve_ref(&r).unwrap());
                     }
                     Ok(quick_xml::events::Event::Eof) => break,
                     Ok(_) => {}

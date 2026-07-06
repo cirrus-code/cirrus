@@ -6,6 +6,7 @@
 
 use cirrus_metadata::{MetadataType, PackageManifest};
 use quick_xml::Reader;
+use quick_xml::escape::unescape;
 use quick_xml::events::Event;
 
 #[test]
@@ -44,7 +45,7 @@ fn to_xml_is_well_formed_and_parses() {
             }
             Event::Text(t) => {
                 if let Some(tag) = &current_tag {
-                    let text = t.unescape().unwrap().into_owned();
+                    let text = unescape(&t.decode().unwrap()).unwrap().into_owned();
                     if tag == b"name" {
                         type_names.push(text);
                     } else if tag == b"members" {

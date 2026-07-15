@@ -23,14 +23,33 @@
 //!
 //! ## Token rotation
 //!
-//! Refresh tokens are not rotated; the same token is reused across
-//! refreshes.
+//! Some orgs enable **Refresh Token Rotation**: each refresh-grant response
+//! returns a new `refresh_token` and invalidates the one just used.
+//! Rotation is server-controlled — when it is enabled the session adopts
+//! each replacement transparently and keeps working. When it is disabled
+//! (the default for classic Connected Apps) refresh responses carry no new
+//! token and the original is reused indefinitely, so non-rotating orgs are
+//! unaffected.
+//!
+//! Adopting a rotated token in memory is enough for a process that holds
+//! one session for its whole lifetime. Consumers that **persist** the
+//! refresh token across restarts must register a [`RotationHandler`] via
+//! [`RefreshTokenAuthBuilder::on_rotation`] to durably store each
+//! replacement — otherwise a restart resurrects an already-invalidated
+//! token, which the server rejects (and, under rotation, revokes the
+//! entire token family, forcing re-authorization).
+//!
+//! Because reusing a rotated-away token revokes the whole family, one
+//! stored token must back exactly one session: share a single
+//! `Arc<RefreshTokenAuth>` across clients rather than building several
+//! sessions from the same token.
 
 use crate::AuthSession;
 use crate::error::{AuthError, AuthResult};
 use crate::token_endpoint::{check_instance_url, exchange, token_is_fresh};
 use async_trait::async_trait;
 use std::borrow::Cow;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
@@ -58,28 +77,73 @@ impl std::fmt::Debug for CachedToken {
     }
 }
 
+/// Interior state guarded by a single lock: the live refresh token (which
+/// rotation may replace) and the cached access token. Folding both into one
+/// lock makes rotation serialize against minting — every mint reads and
+/// writes the pair through the same write guard, so two refreshes can never
+/// race to rotate, and a rotated-away token is never reused.
+struct AuthState {
+    refresh_token: String,
+    cached: Option<CachedToken>,
+}
+
+/// Callback invoked when the session adopts a rotated refresh token.
+///
+/// Salesforce orgs with **Refresh Token Rotation** enabled return a new
+/// `refresh_token` on every refresh and invalidate the previous one.
+/// [`RefreshTokenAuth`] adopts the replacement in memory automatically;
+/// register a handler when the token is **persisted** somewhere durable so
+/// the stored copy tracks each rotation. Without one, a restart reuses a
+/// dead token.
+///
+/// The handler is awaited while the session holds its internal write lock,
+/// before the triggering [`access_token`](AuthSession::access_token) call
+/// returns. That ordering is deliberate — persistence completes before any
+/// further token use, so a crash cannot strand the credential between
+/// rotation and storage. Two consequences follow:
+///
+/// - The handler **must not** call back into the same session (for example
+///   [`access_token`](AuthSession::access_token)): it would deadlock on the
+///   held lock.
+/// - A slow handler stalls every concurrent `access_token` call for its
+///   duration. Keep it quick and give durable I/O its own timeout.
+///
+/// The signature is infallible: by the time it runs the rotation has
+/// already taken effect at Salesforce and cannot be undone, so there is
+/// nothing for the SDK to recover from. A handler that fails to persist
+/// owns that failure — log it, retry internally, or accept that a restart
+/// will require re-authorization.
+#[async_trait]
+pub trait RotationHandler: Send + Sync {
+    /// Called with the replacement refresh token each time one is adopted.
+    /// The previous token is already invalid at Salesforce when this runs.
+    async fn on_rotation(&self, new_refresh_token: &str);
+}
+
 /// Refresh-token-grant auth session.
 ///
 /// Construct via [`RefreshTokenAuth::builder`].
 pub struct RefreshTokenAuth {
     consumer_key: String,
     consumer_secret: Option<String>,
-    refresh_token: String,
     login_url: String,
     instance_url: String,
     token_ttl: Duration,
     http: reqwest::Client,
-    cached: RwLock<Option<CachedToken>>,
+    rotation_handler: Option<Arc<dyn RotationHandler>>,
+    state: RwLock<AuthState>,
 }
 
 impl std::fmt::Debug for RefreshTokenAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Omit consumer_key, consumer_secret, and refresh_token — all secrets.
+        // Omit consumer_key, consumer_secret, and the refresh/access tokens
+        // held in `state` — all secrets.
         f.debug_struct("RefreshTokenAuth")
             .field("login_url", &self.login_url)
             .field("instance_url", &self.instance_url)
             .field("token_ttl", &self.token_ttl)
             .field("confidential", &self.consumer_secret.is_some())
+            .field("rotation_handler", &self.rotation_handler.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -114,25 +178,56 @@ impl RefreshTokenAuth {
         RefreshTokenAuthBuilder::default()
     }
 
-    async fn mint_token(&self) -> AuthResult<CachedToken> {
+    /// Mints a fresh access token through the refresh grant, mutating
+    /// `state` in place: the current refresh token is read from it, and a
+    /// rotated replacement (if any) is written back.
+    ///
+    /// Called only under the `state` write lock, so the read-then-write of
+    /// the refresh token is serialized against every other mint.
+    async fn mint_token(&self, state: &mut AuthState) -> AuthResult<CachedToken> {
         tracing::info!(
             target: "cirrus::auth",
             flow = "refresh-token",
             login_url = %self.login_url,
             "minting fresh access token",
         );
+        // Snapshot the current refresh token before the await: the body
+        // borrows it, and it must not alias `state` when the rotated
+        // replacement is written back below.
+        let current_refresh = state.refresh_token.clone();
+
         // Compose the form body. consumer_secret is conditional on whether
         // the connected app is confidential.
         let mut body: Vec<(&str, &str)> = vec![
             ("grant_type", "refresh_token"),
             ("client_id", self.consumer_key.as_str()),
-            ("refresh_token", self.refresh_token.as_str()),
+            ("refresh_token", current_refresh.as_str()),
         ];
         if let Some(secret) = self.consumer_secret.as_deref() {
             body.push(("client_secret", secret));
         }
 
         let token = exchange(&self.http, &self.login_url, &body).await?;
+
+        // Adopt a rotated refresh token before any post-exchange failure
+        // path (e.g. the instance_url check below). Once `exchange` returns
+        // 2xx under Refresh Token Rotation, `current_refresh` is already
+        // dead at Salesforce and the replacement is the only usable
+        // credential — it must be persisted even if this call later aborts.
+        if let Some(rotated) = token.refresh_token.as_deref()
+            && rotated != current_refresh
+        {
+            state.refresh_token = rotated.to_string();
+            tracing::info!(
+                target: "cirrus::auth",
+                flow = "refresh-token",
+                "adopted rotated refresh token",
+            );
+            if let Some(handler) = &self.rotation_handler {
+                handler.on_rotation(rotated).await;
+            }
+        }
+
         check_instance_url(&self.instance_url, &token)?;
 
         let expires_at = token.cache_expiry(self.token_ttl);
@@ -148,24 +243,26 @@ impl AuthSession for RefreshTokenAuth {
     async fn access_token(&self) -> AuthResult<Cow<'_, str>> {
         // Fast path — read lock, return clone of cached token if still valid.
         {
-            let guard = self.cached.read().await;
-            if let Some(cached) = guard.as_ref()
+            let guard = self.state.read().await;
+            if let Some(cached) = guard.cached.as_ref()
                 && token_is_fresh(cached.expires_at)
             {
                 return Ok(Cow::Owned(cached.access_token.clone()));
             }
         }
 
-        // Slow path — write lock, double-check, mint.
-        let mut guard = self.cached.write().await;
-        if let Some(cached) = guard.as_ref()
+        // Slow path — write lock, double-check, mint. The write lock also
+        // serializes refresh-token rotation: `mint_token` reads and replaces
+        // the token through this same guard, so no two mints can race.
+        let mut guard = self.state.write().await;
+        if let Some(cached) = guard.cached.as_ref()
             && token_is_fresh(cached.expires_at)
         {
             return Ok(Cow::Owned(cached.access_token.clone()));
         }
-        let new_token = self.mint_token().await?;
+        let new_token = self.mint_token(&mut guard).await?;
         let token_str = new_token.access_token.clone();
-        *guard = Some(new_token);
+        guard.cached = Some(new_token);
         Ok(Cow::Owned(token_str))
     }
 
@@ -178,8 +275,8 @@ impl AuthSession for RefreshTokenAuth {
         // still matches what the failing request used. The underlying
         // refresh_token isn't affected — we only ever want the
         // *short-lived* access token re-minted.
-        let mut guard = self.cached.write().await;
-        if let Some(cached) = guard.as_ref()
+        let mut guard = self.state.write().await;
+        if let Some(cached) = guard.cached.as_ref()
             && cached.access_token == stale_token
         {
             tracing::debug!(
@@ -187,7 +284,7 @@ impl AuthSession for RefreshTokenAuth {
                 flow = "refresh-token",
                 "invalidating cached token (CAS matched)",
             );
-            *guard = None;
+            guard.cached = None;
         } else {
             tracing::trace!(
                 target: "cirrus::auth",
@@ -208,6 +305,7 @@ pub struct RefreshTokenAuthBuilder {
     instance_url: Option<String>,
     token_ttl: Option<Duration>,
     http_client: Option<reqwest::Client>,
+    rotation_handler: Option<Arc<dyn RotationHandler>>,
 }
 
 impl std::fmt::Debug for RefreshTokenAuthBuilder {
@@ -219,6 +317,7 @@ impl std::fmt::Debug for RefreshTokenAuthBuilder {
             .field("login_url", &self.login_url)
             .field("instance_url", &self.instance_url)
             .field("token_ttl", &self.token_ttl)
+            .field("rotation_handler", &self.rotation_handler.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -239,8 +338,24 @@ impl RefreshTokenAuthBuilder {
 
     /// Refresh token issued by a prior OAuth flow (Web Server, Device,
     /// User-Agent). Required.
+    ///
+    /// This is the *initial* token. Against an org with Refresh Token
+    /// Rotation enabled it is superseded at runtime as the session adopts
+    /// each rotated replacement; register an
+    /// [`on_rotation`](Self::on_rotation) handler to persist those
+    /// replacements across restarts.
     pub fn refresh_token(mut self, token: impl Into<String>) -> Self {
         self.refresh_token = Some(token.into());
+        self
+    }
+
+    /// Registers a [`RotationHandler`] invoked whenever the session adopts a
+    /// rotated refresh token (Refresh Token Rotation). Optional: without a
+    /// handler, rotations are still adopted in memory but not persisted —
+    /// enough for a process that holds the session for its whole lifetime,
+    /// insufficient for a consumer that stores the token across restarts.
+    pub fn on_rotation(mut self, handler: Arc<dyn RotationHandler>) -> Self {
+        self.rotation_handler = Some(handler);
         self
     }
 
@@ -299,12 +414,15 @@ impl RefreshTokenAuthBuilder {
         Ok(RefreshTokenAuth {
             consumer_key,
             consumer_secret: self.consumer_secret,
-            refresh_token,
             login_url,
             instance_url,
             token_ttl,
             http,
-            cached: RwLock::new(None),
+            rotation_handler: self.rotation_handler,
+            state: RwLock::new(AuthState {
+                refresh_token,
+                cached: None,
+            }),
         })
     }
 }
@@ -603,5 +721,327 @@ mod tests {
             }
             self.response.clone()
         }
+    }
+
+    // ----- Refresh Token Rotation (RTR) -----
+    //
+    // Wire shape per Salesforce Help, "Force one-time-use Refresh Tokens":
+    // an RTR-enabled refresh-grant response is the standard token response
+    // plus a fresh `refresh_token` that supersedes the one just sent.
+    // https://help.salesforce.com/s/articleView?id=005316711&type=1
+
+    /// The refresh token [`builder_with_required_fields`] starts with. Kept
+    /// as a constant so rotation tests can assert it is *not* reused once a
+    /// replacement is adopted.
+    const INITIAL_REFRESH_TOKEN: &str = "5Aep861KIwKdekr...refresh";
+
+    /// A 200 token response for `my-org`, optionally carrying a rotated
+    /// `refresh_token` (present iff the org has RTR enabled).
+    fn token_response(access_token: &str, rotated_refresh: Option<&str>) -> ResponseTemplate {
+        let mut body = serde_json::json!({
+            "access_token": access_token,
+            "instance_url": "https://my-org.my.salesforce.com",
+            "token_type": "Bearer",
+        });
+        if let Some(rotated) = rotated_refresh {
+            body["refresh_token"] = serde_json::Value::String(rotated.to_string());
+        }
+        ResponseTemplate::new(200).set_body_json(body)
+    }
+
+    /// Returns a canned sequence of responses (clamping to the last for any
+    /// extra hits) and records every request body for later inspection.
+    struct SequencedResponder {
+        hits: Arc<AtomicUsize>,
+        request_bodies: Arc<tokio::sync::Mutex<Vec<String>>>,
+        responses: Vec<ResponseTemplate>,
+    }
+
+    impl Respond for SequencedResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let idx = self.hits.fetch_add(1, Ordering::SeqCst);
+            if let Ok(mut bodies) = self.request_bodies.try_lock() {
+                bodies.push(String::from_utf8_lossy(&request.body).into_owned());
+            }
+            let i = idx.min(self.responses.len().saturating_sub(1));
+            self.responses[i].clone()
+        }
+    }
+
+    /// Records each rotated token it is handed, in order.
+    struct RecordingHandler {
+        seen: Arc<tokio::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl RotationHandler for RecordingHandler {
+        async fn on_rotation(&self, new_refresh_token: &str) {
+            self.seen.lock().await.push(new_refresh_token.to_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn rotation_adopts_new_refresh_token_on_next_mint() {
+        let server = MockServer::start().await;
+        let bodies = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .and(path("/services/oauth2/token"))
+            .respond_with(SequencedResponder {
+                hits: Arc::new(AtomicUsize::new(0)),
+                request_bodies: bodies.clone(),
+                responses: vec![
+                    token_response("ACCESS1", Some("R2")),
+                    token_response("ACCESS2", Some("R3")),
+                ],
+            })
+            .mount(&server)
+            .await;
+
+        let auth = builder_with_required_fields()
+            .login_url(server.uri())
+            .token_ttl(Duration::ZERO) // force a re-mint on every call
+            .build()
+            .unwrap();
+
+        auth.access_token().await.unwrap();
+        auth.access_token().await.unwrap();
+
+        let bodies = bodies.lock().await;
+        assert_eq!(bodies.len(), 2);
+        assert!(
+            bodies[0].contains(INITIAL_REFRESH_TOKEN),
+            "first mint should use the original token: {}",
+            bodies[0]
+        );
+        assert!(
+            bodies[1].contains("refresh_token=R2"),
+            "second mint should use the rotated token: {}",
+            bodies[1]
+        );
+        assert!(
+            !bodies[1].contains(INITIAL_REFRESH_TOKEN),
+            "second mint must not reuse the invalidated token: {}",
+            bodies[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn handler_fires_once_per_rotation_in_order() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/services/oauth2/token"))
+            .respond_with(SequencedResponder {
+                hits: Arc::new(AtomicUsize::new(0)),
+                request_bodies: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+                responses: vec![
+                    token_response("A1", Some("R2")),
+                    token_response("A2", Some("R3")),
+                ],
+            })
+            .mount(&server)
+            .await;
+
+        let seen = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let auth = builder_with_required_fields()
+            .login_url(server.uri())
+            .token_ttl(Duration::ZERO)
+            .on_rotation(Arc::new(RecordingHandler { seen: seen.clone() }))
+            .build()
+            .unwrap();
+
+        auth.access_token().await.unwrap();
+        auth.access_token().await.unwrap();
+
+        assert_eq!(*seen.lock().await, vec!["R2".to_string(), "R3".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn handler_not_fired_when_response_omits_refresh_token() {
+        // Non-RTR org: refresh responses carry no `refresh_token`.
+        let server = MockServer::start().await;
+        let bodies = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .and(path("/services/oauth2/token"))
+            .respond_with(SequencedResponder {
+                hits: Arc::new(AtomicUsize::new(0)),
+                request_bodies: bodies.clone(),
+                responses: vec![token_response("A1", None), token_response("A2", None)],
+            })
+            .mount(&server)
+            .await;
+
+        let seen = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let auth = builder_with_required_fields()
+            .login_url(server.uri())
+            .token_ttl(Duration::ZERO)
+            .on_rotation(Arc::new(RecordingHandler { seen: seen.clone() }))
+            .build()
+            .unwrap();
+
+        auth.access_token().await.unwrap();
+        auth.access_token().await.unwrap();
+
+        assert!(
+            seen.lock().await.is_empty(),
+            "handler must not fire without rotation"
+        );
+        let bodies = bodies.lock().await;
+        assert!(
+            bodies[1].contains(INITIAL_REFRESH_TOKEN),
+            "without rotation the original token keeps being reused: {}",
+            bodies[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn handler_not_fired_when_response_echoes_same_token() {
+        // Defensive: a response that echoes the *same* refresh token is not
+        // a rotation and must not fire the handler.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/services/oauth2/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "A1",
+                "instance_url": "https://my-org.my.salesforce.com",
+                "refresh_token": INITIAL_REFRESH_TOKEN,
+            })))
+            .mount(&server)
+            .await;
+
+        let seen = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let auth = builder_with_required_fields()
+            .login_url(server.uri())
+            .on_rotation(Arc::new(RecordingHandler { seen: seen.clone() }))
+            .build()
+            .unwrap();
+
+        auth.access_token().await.unwrap();
+
+        assert!(
+            seen.lock().await.is_empty(),
+            "an echoed identical token is not a rotation"
+        );
+    }
+
+    #[tokio::test]
+    async fn handler_completes_before_access_token_returns() {
+        // The handler is awaited under the write lock, so its effect must be
+        // observable synchronously the instant `access_token` returns — a
+        // fire-and-forget (spawned) handler would fail this.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/services/oauth2/token"))
+            .respond_with(token_response("A1", Some("R2")))
+            .mount(&server)
+            .await;
+
+        let seen = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let auth = builder_with_required_fields()
+            .login_url(server.uri())
+            .on_rotation(Arc::new(RecordingHandler { seen: seen.clone() }))
+            .build()
+            .unwrap();
+
+        auth.access_token().await.unwrap();
+        // No await between the call above and this read other than the lock
+        // acquisition itself; the handler has already run.
+        assert_eq!(*seen.lock().await, vec!["R2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn rotation_adopted_even_when_instance_url_mismatches() {
+        // The rotated token must be adopted (and persisted) before the
+        // instance_url check aborts the call — otherwise the mismatch error
+        // would discard the only live credential.
+        let server = MockServer::start().await;
+        let bodies = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .and(path("/services/oauth2/token"))
+            .respond_with(SequencedResponder {
+                hits: Arc::new(AtomicUsize::new(0)),
+                request_bodies: bodies.clone(),
+                responses: vec![
+                    // Rotates to R2 but reports the wrong instance_url → error.
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "access_token": "A1",
+                        "instance_url": "https://wrong-org.my.salesforce.com",
+                        "refresh_token": "R2",
+                    })),
+                    // Correct org, rotates again to R3.
+                    token_response("A2", Some("R3")),
+                ],
+            })
+            .mount(&server)
+            .await;
+
+        let seen = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let auth = builder_with_required_fields()
+            .login_url(server.uri())
+            .token_ttl(Duration::ZERO)
+            .on_rotation(Arc::new(RecordingHandler { seen: seen.clone() }))
+            .build()
+            .unwrap();
+
+        let err = auth.access_token().await.unwrap_err();
+        assert!(
+            matches!(err, AuthError::Other(_)),
+            "expected mismatch error, got {err:?}"
+        );
+        assert_eq!(
+            *seen.lock().await,
+            vec!["R2".to_string()],
+            "R2 must be adopted despite the mismatch"
+        );
+
+        // The next mint uses the adopted R2, not the dead original.
+        auth.access_token().await.unwrap();
+        let bodies = bodies.lock().await;
+        assert!(
+            bodies[1].contains("refresh_token=R2"),
+            "recovery mint should use the adopted token: {}",
+            bodies[1]
+        );
+        assert!(
+            !bodies[1].contains(INITIAL_REFRESH_TOKEN),
+            "recovery mint must not reuse the invalidated original: {}",
+            bodies[1]
+        );
+    }
+
+    #[test]
+    fn debug_output_redacts_tokens_and_secrets() {
+        let seen = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let auth = builder_with_required_fields()
+            .consumer_secret("super-secret-value")
+            .on_rotation(Arc::new(RecordingHandler { seen }))
+            .build()
+            .unwrap();
+
+        let dbg = format!("{auth:?}");
+        assert!(
+            !dbg.contains(INITIAL_REFRESH_TOKEN),
+            "refresh token leaked: {dbg}"
+        );
+        assert!(
+            !dbg.contains("super-secret-value"),
+            "consumer secret leaked: {dbg}"
+        );
+        assert!(
+            !dbg.contains("consumer-key-123"),
+            "consumer key leaked: {dbg}"
+        );
+        // The presence flag is fine to surface; the material is not.
+        assert!(dbg.contains("rotation_handler: true"));
+
+        let builder = builder_with_required_fields().consumer_secret("super-secret-value");
+        let builder_dbg = format!("{builder:?}");
+        assert!(
+            !builder_dbg.contains(INITIAL_REFRESH_TOKEN),
+            "builder leaked token: {builder_dbg}"
+        );
+        assert!(
+            !builder_dbg.contains("super-secret-value"),
+            "builder leaked secret: {builder_dbg}"
+        );
     }
 }

@@ -39,6 +39,14 @@
 //! token, which the server rejects (and, under rotation, revokes the
 //! entire token family, forcing re-authorization).
 //!
+//! Minting is cancellation-safe: the refresh exchange, rotation adoption,
+//! and handler notification run in a task detached from the calling
+//! future, so a caller dropped mid-refresh — a disconnected client, an
+//! elapsed timeout, a losing `select!` branch — cannot strand a rotated
+//! token. The replacement is still adopted and the handler still fires.
+//! (Minting spawns onto the ambient Tokio runtime — already required by
+//! this crate's HTTP stack — and panics outside one.)
+//!
 //! Because reusing a rotated-away token revokes the whole family, one
 //! stored token must back exactly one session: share a single
 //! `Arc<RefreshTokenAuth>` across clients rather than building several
@@ -108,6 +116,10 @@ struct AuthState {
 /// - A slow handler stalls every concurrent `access_token` call for its
 ///   duration. Keep it quick and give durable I/O its own timeout.
 ///
+/// The handler runs even when the `access_token` call that triggered the
+/// rotation is cancelled mid-flight: the mint executes in a task detached
+/// from the caller, so a dropped future cannot skip persistence.
+///
 /// The signature is infallible: by the time it runs the rotation has
 /// already taken effect at Salesforce and cannot be undone, so there is
 /// nothing for the SDK to recover from. A handler that fails to persist
@@ -120,10 +132,10 @@ pub trait RotationHandler: Send + Sync {
     async fn on_rotation(&self, new_refresh_token: &str);
 }
 
-/// Refresh-token-grant auth session.
-///
-/// Construct via [`RefreshTokenAuth::builder`].
-pub struct RefreshTokenAuth {
+/// Everything a mint needs besides the mutable [`AuthState`], bundled
+/// behind one `Arc` so the slow path can move a clone into the detached
+/// mint task (which must own `'static` data).
+struct MintConfig {
     consumer_key: String,
     consumer_secret: Option<String>,
     login_url: String,
@@ -131,7 +143,14 @@ pub struct RefreshTokenAuth {
     token_ttl: Duration,
     http: reqwest::Client,
     rotation_handler: Option<Arc<dyn RotationHandler>>,
-    state: RwLock<AuthState>,
+}
+
+/// Refresh-token-grant auth session.
+///
+/// Construct via [`RefreshTokenAuth::builder`].
+pub struct RefreshTokenAuth {
+    config: Arc<MintConfig>,
+    state: Arc<RwLock<AuthState>>,
 }
 
 impl std::fmt::Debug for RefreshTokenAuth {
@@ -139,11 +158,11 @@ impl std::fmt::Debug for RefreshTokenAuth {
         // Omit consumer_key, consumer_secret, and the refresh/access tokens
         // held in `state` — all secrets.
         f.debug_struct("RefreshTokenAuth")
-            .field("login_url", &self.login_url)
-            .field("instance_url", &self.instance_url)
-            .field("token_ttl", &self.token_ttl)
-            .field("confidential", &self.consumer_secret.is_some())
-            .field("rotation_handler", &self.rotation_handler.is_some())
+            .field("login_url", &self.config.login_url)
+            .field("instance_url", &self.config.instance_url)
+            .field("token_ttl", &self.config.token_ttl)
+            .field("confidential", &self.config.consumer_secret.is_some())
+            .field("rotation_handler", &self.config.rotation_handler.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -177,7 +196,9 @@ impl RefreshTokenAuth {
     pub fn builder() -> RefreshTokenAuthBuilder {
         RefreshTokenAuthBuilder::default()
     }
+}
 
+impl MintConfig {
     /// Mints a fresh access token through the refresh grant, mutating
     /// `state` in place: the current refresh token is read from it, and a
     /// rotated replacement (if any) is written back.
@@ -251,23 +272,43 @@ impl AuthSession for RefreshTokenAuth {
             }
         }
 
-        // Slow path — write lock, double-check, mint. The write lock also
-        // serializes refresh-token rotation: `mint_token` reads and replaces
-        // the token through this same guard, so no two mints can race.
-        let mut guard = self.state.write().await;
+        // Slow path — take an owned write guard, double-check, mint. The
+        // write lock serializes refresh-token rotation: `mint_token` reads
+        // and replaces the token through this guard, so no two mints can
+        // race.
+        //
+        // The mint runs in a detached task because it is not cancellation-
+        // safe: once the refresh grant reaches a Refresh Token Rotation org,
+        // the token just presented is dead and the replacement exists only
+        // in the response, so the adoption and handler notification must run
+        // even if this caller is dropped mid-await (client disconnect,
+        // timeout, `select!`). Awaiting the JoinHandle abandons only the
+        // result, never the mint; the moved guard is released when the task
+        // finishes, and the cache write stays inside the task so a cancelled
+        // caller still leaves the fresh token behind.
+        let mut guard = Arc::clone(&self.state).write_owned().await;
         if let Some(cached) = guard.cached.as_ref()
             && token_is_fresh(cached.expires_at)
         {
             return Ok(Cow::Owned(cached.access_token.clone()));
         }
-        let new_token = self.mint_token(&mut guard).await?;
-        let token_str = new_token.access_token.clone();
-        guard.cached = Some(new_token);
-        Ok(Cow::Owned(token_str))
+        let config = Arc::clone(&self.config);
+        let task = tokio::spawn(async move {
+            let minted = config.mint_token(&mut guard).await?;
+            let token = minted.access_token.clone();
+            guard.cached = Some(minted);
+            Ok::<_, AuthError>(token)
+        });
+        match task.await {
+            Ok(result) => result.map(Cow::Owned),
+            Err(join_error) => Err(AuthError::Other(format!(
+                "token mint task failed: {join_error}"
+            ))),
+        }
     }
 
     fn instance_url(&self) -> &str {
-        &self.instance_url
+        &self.config.instance_url
     }
 
     async fn invalidate(&self, stale_token: &str) {
@@ -412,17 +453,19 @@ impl RefreshTokenAuthBuilder {
         let http = self.http_client.unwrap_or_default();
 
         Ok(RefreshTokenAuth {
-            consumer_key,
-            consumer_secret: self.consumer_secret,
-            login_url,
-            instance_url,
-            token_ttl,
-            http,
-            rotation_handler: self.rotation_handler,
-            state: RwLock::new(AuthState {
+            config: Arc::new(MintConfig {
+                consumer_key,
+                consumer_secret: self.consumer_secret,
+                login_url,
+                instance_url,
+                token_ttl,
+                http,
+                rotation_handler: self.rotation_handler,
+            }),
+            state: Arc::new(RwLock::new(AuthState {
                 refresh_token,
                 cached: None,
-            }),
+            })),
         })
     }
 }
@@ -480,7 +523,7 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(auth.instance_url(), "https://my-org.my.salesforce.com");
-        assert_eq!(auth.login_url, PRODUCTION_LOGIN_URL);
+        assert_eq!(auth.config.login_url, PRODUCTION_LOGIN_URL);
     }
 
     #[tokio::test]
@@ -1006,6 +1049,111 @@ mod tests {
             "recovery mint must not reuse the invalidated original: {}",
             bodies[1]
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_mint_still_adopts_rotation() {
+        // Under Refresh Token Rotation an abandoned mint is catastrophic:
+        // once the server processes the grant, the token that was presented
+        // is dead and the replacement exists only in the response. A caller
+        // dropped mid-exchange (client disconnect, timeout, `select!`) must
+        // not abort the mint — it runs detached, adopts the rotation, and
+        // fires the handler regardless.
+        let server = MockServer::start().await;
+        let bodies = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        Mock::given(method("POST"))
+            .and(path("/services/oauth2/token"))
+            .respond_with(SequencedResponder {
+                hits: Arc::new(AtomicUsize::new(0)),
+                request_bodies: bodies.clone(),
+                responses: vec![
+                    // Slow enough that the caller's timeout below always
+                    // elapses while the exchange is still in flight.
+                    token_response("A1", Some("R2")).set_delay(Duration::from_millis(400)),
+                    token_response("A2", Some("R3")),
+                ],
+            })
+            .mount(&server)
+            .await;
+
+        let seen = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let auth = builder_with_required_fields()
+            .login_url(server.uri())
+            .token_ttl(Duration::ZERO) // the follow-up call below must re-mint
+            .on_rotation(Arc::new(RecordingHandler { seen: seen.clone() }))
+            .build()
+            .unwrap();
+
+        let cancelled = tokio::time::timeout(Duration::from_millis(50), auth.access_token()).await;
+        assert!(cancelled.is_err(), "caller must be dropped mid-mint");
+
+        // The mint outlives the cancelled caller: wait (bounded) for the
+        // handler to observe the rotated token.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if *seen.lock().await == ["R2"] {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "rotation was not adopted after the caller was cancelled"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // This call completing also proves the write lock held during the
+        // detached mint was released when it finished.
+        auth.access_token().await.unwrap();
+        let bodies = bodies.lock().await;
+        assert_eq!(bodies.len(), 2);
+        assert!(
+            bodies[1].contains("refresh_token=R2"),
+            "post-cancellation mint should use the adopted token: {}",
+            bodies[1]
+        );
+        assert!(
+            !bodies[1].contains(INITIAL_REFRESH_TOKEN),
+            "post-cancellation mint must not present the invalidated token: {}",
+            bodies[1]
+        );
+    }
+
+    /// Panics when notified — drives the mint task's panic-recovery path.
+    struct PanickingHandler;
+
+    #[async_trait]
+    impl RotationHandler for PanickingHandler {
+        async fn on_rotation(&self, _new_refresh_token: &str) {
+            panic!("handler panic");
+        }
+    }
+
+    #[tokio::test]
+    async fn mint_task_panic_surfaces_as_auth_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/services/oauth2/token"))
+            .respond_with(token_response("A1", Some("R2")))
+            .mount(&server)
+            .await;
+
+        let auth = builder_with_required_fields()
+            .login_url(server.uri())
+            .on_rotation(Arc::new(PanickingHandler))
+            .build()
+            .unwrap();
+
+        let err = auth.access_token().await.unwrap_err();
+        assert!(
+            matches!(err, AuthError::Other(_)),
+            "handler panic must surface as an AuthError, got {err:?}"
+        );
+
+        // R2 was adopted before the handler ran, and the unwinding task
+        // released the lock. The next mint presents R2; the mock echoes the
+        // same token back, which is not a rotation, so no handler fires and
+        // the call succeeds.
+        auth.access_token().await.unwrap();
     }
 
     #[test]

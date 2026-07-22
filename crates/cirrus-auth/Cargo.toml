@@ -26,7 +26,10 @@ serde_json.workspace = true
 serde_urlencoded.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+# `rt` on top of the workspace default (sync, time): the refresh flow
+# spawns its token mint as a detached task so a cancelled caller cannot
+# strand a rotated refresh token.
+tokio = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 url.workspace = true
 
